@@ -136,9 +136,15 @@ mod tests {
 
     #[test]
     fn non_normalized_start_is_rejected() {
-        let (_t, base) = tmp();
+        // A literal path: on Windows, pushing `..` onto a canonical (verbatim) path resolves it.
+        let start = if cfg!(windows) { r"C:\work\a\.." } else { "/work/a/.." };
         assert!(matches!(
-            discover(&base.join("a").join("..")),
+            discover(Path::new(start)),
+            Err(ProjectError::NotNormalized(_))
+        ));
+        let start = if cfg!(windows) { r"C:\work\.\a" } else { "/work/./a" };
+        assert!(matches!(
+            discover(Path::new(start)),
             Err(ProjectError::NotNormalized(_))
         ));
     }
