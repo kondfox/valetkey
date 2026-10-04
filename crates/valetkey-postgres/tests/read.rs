@@ -46,7 +46,7 @@ async fn start(tag: &str, args: &[&str], host_auth: Option<&str>) -> Pg {
         .start()
         .await
         .expect("postgres starts");
-    let port = container.get_host_port_ipv4(5432).await.unwrap();
+    let port = mapped_port(&container).await;
     let pg = Pg {
         _container: container,
         port,
@@ -451,4 +451,20 @@ async fn protected_checks_find_extensions_functions_and_grant_drift() {
     run_with(&pg, "SELECT 1", &[], true, Limits::default(), &[], true)
         .await
         .expect("allow_grant_drift skips query C");
+}
+
+/// The mapped port, retried briefly: right after start, Docker sometimes doesn't report the
+/// mapping yet (`PortNotExposed`), especially with many containers starting at once.
+async fn mapped_port<I: testcontainers::Image>(c: &ContainerAsync<I>) -> u16 {
+    for attempt in 0.. {
+        match c.get_host_port_ipv4(5432).await {
+            Ok(port) => return port,
+            Err(e) if attempt < 20 => {
+                let _ = e;
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+            Err(e) => panic!("no mapped port: {e}"),
+        }
+    }
+    unreachable!()
 }

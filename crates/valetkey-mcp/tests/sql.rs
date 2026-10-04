@@ -93,7 +93,7 @@ async fn env() -> Env {
         .start()
         .await
         .unwrap();
-    let port = pg.get_host_port_ipv4(5432).await.unwrap();
+    let port = mapped_port(&pg).await;
     let (client, conn) = tokio_postgres::connect(
         &format!("host=127.0.0.1 port={port} user=postgres password=pw"),
         tokio_postgres::NoTls,
@@ -323,4 +323,20 @@ async fn protected_targets_wait_for_a_fence_and_policy_runs_before_the_cache() {
         err && r.as_str().unwrap().contains("changed since it was approved"),
         "{r}"
     );
+}
+
+/// The mapped port, retried briefly: right after start, Docker sometimes doesn't report the
+/// mapping yet (`PortNotExposed`), especially with many containers starting at once.
+async fn mapped_port<I: testcontainers::Image>(c: &ContainerAsync<I>) -> u16 {
+    for attempt in 0.. {
+        match c.get_host_port_ipv4(5432).await {
+            Ok(port) => return port,
+            Err(e) if attempt < 20 => {
+                let _ = e;
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+            Err(e) => panic!("no mapped port: {e}"),
+        }
+    }
+    unreachable!()
 }
