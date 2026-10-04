@@ -41,7 +41,40 @@ Why all three are needed: [[2026-10-04-credential-broker-pattern]].
 
 ## Code layout
 
-Planned Cargo workspace: `design.md §4`. **No code exists yet.** When M1 lands, this page gets the
-worked end-to-end example the seed requires: one MCP call traced through
-`valetkey-mcp` → `valetkey-core` → `valetkey-secrets` → `valetkey-postgres`, with `file:line`
-links. That example becomes the template for new adapters and sources.
+Cargo workspace (`docs/design.md §4`). Crates appear with the milestone that needs them:
+
+| Crate | Holds | May import |
+|---|---|---|
+| `valetkey-core` | config model, secret references, project identity, snapshots, diff, sanitizing | no vendor libraries |
+| `valetkey-postgres` | the Postgres target kind (M1: config only; driver in M2) | `tokio-postgres` (M2), only here |
+| `valetkey-mcp` | the broker (MCP server) | `rmcp`, only here |
+| `valetkey-cli` | the `valetkey` binary; the **only** composition root | everything |
+
+`deny.toml` enforces the "only here" column with `cargo-deny` ban wrappers.
+
+## Worked example: one `valetkey_targets` call
+
+The template for every later tool. Lines are as of the M1 commit.
+
+1. **Startup.** Claude Code runs `valetkey mcp`. `commands/mcp.rs:13` resolves the valetkey root from
+   the OS user database (`valetkey-core/src/paths.rs:34`, never `HOME`). It logs to
+   `~/.valetkey/logs/mcp.log`, because stdout belongs to MCP (`mcp.rs:34`). It captures
+   `CLAUDE_PROJECT_DIR` as **untrusted** (`mcp.rs:18`). It wires the composition root, the target
+   kinds the build supports, in `main.rs:35`, and serves (`mcp.rs:28`).
+2. **Tool call.** `valetkey-mcp/src/lib.rs:70` receives `valetkey_targets` with the client's
+   `Peer`.
+3. **Project directory, cross-checked.** `targets_report` (`lib.rs:129`) asks the client for its
+   MCP roots (`first_root`, `lib.rs:265`) and compares the first one with `CLAUDE_PROJECT_DIR`
+   (`lib.rs:133`). A mismatch, or no roots, means *unverified*, and protected targets are refused.
+4. **Project.** `project::discover` (`valetkey-core/src/project.rs:64`) walks up to the first
+   `valetkey.toml`, refusing symlinks on the way, and derives the project key
+   (`project.rs:19`).
+5. **Approval.** `approval_state` (`lib.rs:222`) parses the working file through the registry
+   (`config.rs:179`; each kind normalizes its own table, e.g. `valetkey-postgres/src/lib.rs:47`),
+   loads the snapshot (`snapshot.rs:64`), and compares canonical hashes (`snapshot.rs:117`,
+   `config.rs:139`). Only an approved, unchanged snapshot is served.
+6. **Answer.** Each approved target is reported with its exposure (`secret_ref.rs:63`) and why
+   it isn't usable yet. Nothing secret is ever read.
+
+A new tool follows the same path. Step 6 is replaced by the adapter call, and the snapshot is the
+only config it may use.

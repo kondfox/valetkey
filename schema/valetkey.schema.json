@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "valetkey.toml",
+  "description": "valetkey.toml: the targets an AI agent may use through valetkey without seeing their secrets.",
+  "type": "object",
+  "properties": {
+    "min_version": {
+      "description": "The oldest valetkey version this file works with, e.g. \"0.1\".",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "require_fence": {
+      "description": "Use protected secrets only when the agent is fenced (default true).",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "targets": {
+      "description": "Targets by id (1–63 characters of a-z, 0-9, '.', '_', '-').",
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": {
+        "$ref": "#/$defs/Target"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "SecretRef": {
+      "description": "Where the broker fetches the secret: env-file://<path>#<KEY>, local://<id>, keyring://<service>/<account> or gcp-sm://<project>/<name>. Never the secret itself.",
+      "type": "string",
+      "pattern": "^(env-file|local|keyring|gcp-sm)://.+$"
+    },
+    "Target": {
+      "oneOf": [
+        {
+          "description": "A Postgres database.",
+          "type": "object",
+          "properties": {
+            "database": {
+              "description": "The database name. The broker verifies it with `current_database()` on every connect.",
+              "type": "string"
+            },
+            "description": {
+              "description": "Free text for humans and the agent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "host": {
+              "description": "TCP host. Only for targets whose secret is exposed (e.g. `env-file://`); a protected secret\nmust use `socket` (§6.2).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "postgres"
+            },
+            "port": {
+              "description": "TCP port (default 5432). Only with `host`.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0
+            },
+            "secret": {
+              "description": "Where the password comes from.",
+              "$ref": "#/$defs/SecretRef"
+            },
+            "socket": {
+              "description": "Socket alias: the proxy listens on `~/.valetkey/sockets/<alias>/.s.PGSQL.5432`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "user": {
+              "description": "The login role. Use a dedicated role per target, never the application's (§6.9).",
+              "type": "string"
+            },
+            "writable": {
+              "description": "Whether `sql_execute` may write. Default `false`.",
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "database",
+            "user",
+            "secret"
+          ]
+        }
+      ]
+    }
+  }
+}

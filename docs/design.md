@@ -304,8 +304,9 @@ add a target that sends a protected secret to a server it controls.
   wins over an outer one; there's no merging.
 - The root is canonicalized with `realpath`. Symlinks above the root are fine (macOS `/var`,
   `/tmp`, relocated home directories). valetkey refuses to load only when `valetkey.toml` itself,
-  or a component between the start directory and the root, is a symlink. Case is folded according
-  to the volume the root sits on, not the OS.
+  or a component between the start directory and the root, is a symlink. On a case-insensitive
+  volume `realpath` returns the on-disk case (verified on macOS in M1), so different spellings of
+  one directory canonicalize to the same root and key.
 - `project-key = blake3(canonical root)`. Each clone and each git worktree is a separate project
   and is approved separately.
 
@@ -390,6 +391,9 @@ file the fence denies to the agent (the confused-deputy problem).
 - `env-file://` paths are relative to the canonical project root. Absolute paths, `..` and `~` are
   rejected. The file is opened without following symlinks, and the opened path must stay under the
   root.
+- **Debug builds only** honour `VALETKEY_DEV_ROOT`, so tests never touch a developer's real root.
+  Release builds, which are what ships and gets registered, ignore it, and `doctor` warns when it
+  runs as a debug build.
 - **The valetkey root and every `~` are resolved from the OS user database** (`getpwuid` on
   Unix, the user profile API on Windows), never from `HOME` or any other environment variable. A
   settings `env` block reaches the broker (M0), so a `HOME` from the environment could move the
@@ -851,11 +855,11 @@ same targets, without changing adapters: they only see a socket path.
 | | Milestone | Done when |
 |---|---|---|
 | M0 | Spike, no product code | **Done 2026-10-04.** Results in the wiki: `wiki/integrations/` pages and `wiki/decisions/2026-10-04-m0-go-no-go.md` |
-| M1 | Skeleton | workspace, CI, config + schema, basic `init`/`allow`/`doctor`, MCP server with `valetkey_targets` |
+| M1 | Skeleton | **Done 2026-10-04.** Workspace (`valetkey-core`, `-postgres` config only, `-mcp`, `-cli`), CI, config + schema, basic `init`/`allow`/`doctor`, MCP server with `valetkey_targets`. Crates appear with the milestone that needs them. `install` (copy + register) moves to M5 |
 | M2 | Postgres read path | `env-file`, `local`, `keyring` and `gcp-sm` sources; auth guard; `sql_query`, `sql_describe`; guard integration tests |
 | M3 | Write path | `sql_execute`, `valetkey approve` (out-of-band approval), audit log |
 | M4 | Fence | Claude Code profile: generate, detect, probe; unfenced mode; fence CI on macOS and Linux |
-| M5 | v0.1 release | `dist` pipeline, installers, Homebrew tap, `self-update`, plugin |
+| M5 | v0.1 release | `dist` pipeline, installers, Homebrew tap, `install`, `self-update`, plugin |
 | M6 | Pilot | first real project adopts valetkey; its targets and fence checks become the acceptance test |
 | M7+ | Roadmap | `http` adapter, `aws-sm`/`azure-kv`/`op` sources, MySQL/MS SQL, Redis/Mongo, `valetkey up` |
 

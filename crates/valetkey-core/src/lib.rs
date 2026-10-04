@@ -1,0 +1,28 @@
+//! valetkey's core: everything that doesn't touch a vendor library.
+//!
+//! - [`paths`]: the valetkey root, resolved from the OS user database.
+//! - [`secret_ref`]: `<scheme>://…` secret references and their exposure.
+//! - [`config`]: `valetkey.toml`, its target kinds, and its canonical form.
+//! - [`project`]: finding the project root and its key.
+//! - [`snapshot`]: approved config snapshots (`valetkey allow`).
+//! - [`diff`]: what changed between two configs, and how risky it is.
+//! - [`sanitize`]: making untrusted text safe to show a human.
+//!
+//! The spec is `docs/design.md` in the repository; section numbers in comments refer to it.
+
+pub mod config;
+pub mod diff;
+pub mod paths;
+pub mod platform;
+pub mod problem;
+pub mod project;
+pub mod sanitize;
+pub mod secret_ref;
+pub mod snapshot;
+
+pub use config::{NormalizeCx, NormalizedTarget, ProjectConfig, Registry, TargetId, TargetKind};
+pub use paths::ValetkeyRoot;
+pub use platform::Platform;
+pub use problem::Problem;
+pub use project::{Project, ProjectKey};
+pub use secret_ref::{Exposure, SecretRef};

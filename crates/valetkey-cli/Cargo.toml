@@ -1,0 +1,35 @@
+[package]
+name = "valetkey-cli"
+description = "The valetkey binary: commands and the single composition root."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "valetkey"
+path = "src/main.rs"
+
+[dependencies]
+valetkey-core.workspace = true
+valetkey-mcp.workspace = true
+valetkey-postgres.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+valetkey-postgres.workspace = true
+rmcp = { workspace = true, features = ["client", "transport-child-process"] }
+tempfile.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true
