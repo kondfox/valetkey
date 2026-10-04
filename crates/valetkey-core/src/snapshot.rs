@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::{ConfigHash, ProjectConfig};
+use crate::config::{CANONICAL_FORMAT, ConfigHash, ProjectConfig};
 use crate::paths::{ValetkeyRoot, ensure_private_dir};
 use crate::project::Project;
 
@@ -54,6 +54,8 @@ pub enum SnapshotError {
     Io { path: PathBuf, source: io::Error },
     #[error("{path} is corrupt: {source}")]
     Corrupt { path: PathBuf, source: serde_json::Error },
+    #[error("{path} is inconsistent: {reason}")]
+    Inconsistent { path: PathBuf, reason: &'static str },
 }
 
 fn snapshot_path(root: &ValetkeyRoot, project: &Project) -> PathBuf {
@@ -63,13 +65,33 @@ fn snapshot_path(root: &ValetkeyRoot, project: &Project) -> PathBuf {
 /// Loads the project's snapshot, if one was ever approved.
 pub fn load(root: &ValetkeyRoot, project: &Project) -> Result<Option<Snapshot>, SnapshotError> {
     let path = snapshot_path(root, project);
-    match std::fs::read(&path) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .map(Some)
-            .map_err(|source| SnapshotError::Corrupt { path, source }),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(source) => Err(SnapshotError::Io { path, source }),
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => return Err(SnapshotError::Io { path, source }),
+    };
+    let snapshot: Snapshot = serde_json::from_slice(&bytes).map_err(|source| SnapshotError::Corrupt {
+        path: path.clone(),
+        source,
+    })?;
+    // The snapshot must be self-consistent: the broker compares against `config_hash` but serves
+    // `config`, so the two must agree.
+    let inconsistent = |reason| {
+        Err(SnapshotError::Inconsistent {
+            path: path.clone(),
+            reason,
+        })
+    };
+    if snapshot.format != SNAPSHOT_FORMAT {
+        return inconsistent("unknown snapshot format");
     }
+    if snapshot.config.format != CANONICAL_FORMAT {
+        return inconsistent("unknown canonical format");
+    }
+    if snapshot.config.hash() != snapshot.config_hash {
+        return inconsistent("the stored config doesn't match its hash");
+    }
+    Ok(Some(snapshot))
 }
 
 /// Stores a snapshot atomically (write a temp file in the same directory, sync, rename), with
@@ -112,9 +134,10 @@ pub enum ApprovalState {
 }
 
 impl ApprovalState {
-    /// Compares the stored snapshot with the working config's canonical form (or the reason it
-    /// failed to parse).
-    pub fn evaluate(snapshot: Option<Snapshot>, project: &Project, current: Result<&ProjectConfig, String>) -> Self {
+    /// Compares the stored snapshot with the working config's canonical form. A config that can't
+    /// be read or parsed is passed as `Err(())`: its details may quote file content, so they never
+    /// end up in the state (callers log them).
+    pub fn evaluate(snapshot: Option<Snapshot>, project: &Project, current: Result<&ProjectConfig, ()>) -> Self {
         let Some(snapshot) = snapshot else {
             return Self::NotApproved;
         };
@@ -125,13 +148,24 @@ impl ApprovalState {
         }
         match current {
             Ok(config) if config.hash() == snapshot.config_hash => Self::Approved(Box::new(snapshot)),
+            Ok(_) if snapshot.written_by != env!("CARGO_PKG_VERSION") => {
+                let reason = format!(
+                    "valetkey was upgraded since the approval ({} → {}), which can change how targets are checked; a human must re-approve",
+                    snapshot.written_by,
+                    env!("CARGO_PKG_VERSION")
+                );
+                Self::Stale {
+                    snapshot: Box::new(snapshot),
+                    reason,
+                }
+            }
             Ok(_) => Self::Stale {
                 snapshot: Box::new(snapshot),
                 reason: "valetkey.toml changed since it was approved".into(),
             },
-            Err(reason) => Self::Stale {
+            Err(()) => Self::Stale {
                 snapshot: Box::new(snapshot),
-                reason: format!("valetkey.toml no longer validates: {reason}"),
+                reason: "valetkey.toml can't be read or doesn't validate".into(),
             },
         }
     }
@@ -184,6 +218,30 @@ mod tests {
     }
 
     #[test]
+    fn inconsistent_snapshots_are_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = ValetkeyRoot::at(tmp.path().join("vk"));
+        let p = project(Path::new("/work/repo"));
+        let mut snap = Snapshot::new(&p, parse("[targets.a]\nkind = \"fake\"\nhost = \"h\"\n").unwrap());
+        // Tamper with the served config but keep the hash the broker compares against.
+        snap.config = parse("[targets.a]\nkind = \"fake\"\nhost = \"evil\"\n").unwrap();
+        store(&root, &p, &snap).unwrap();
+        assert!(matches!(load(&root, &p), Err(SnapshotError::Inconsistent { .. })));
+    }
+
+    #[test]
+    fn upgrade_staleness_is_explained() {
+        let p = project(Path::new("/work/repo"));
+        let mut snap = Snapshot::new(&p, parse("[targets.a]\nkind = \"fake\"\n").unwrap());
+        snap.written_by = "0.0.1".into();
+        let changed = parse("[targets.a]\nkind = \"fake\"\nhost = \"h\"\n").unwrap();
+        match ApprovalState::evaluate(Some(snap), &p, Ok(&changed)) {
+            ApprovalState::Stale { reason, .. } => assert!(reason.contains("upgraded"), "{reason}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
     fn approval_state() {
         let p = project(Path::new("/work/repo"));
         let approved = parse("[targets.a]\nkind = \"fake\"\nhost = \"h\"\n").unwrap();
@@ -201,7 +259,7 @@ mod tests {
             ApprovalState::Stale { .. }
         ));
         assert!(matches!(
-            ApprovalState::evaluate(Some(snap.clone()), &p, Err("bad".into())),
+            ApprovalState::evaluate(Some(snap.clone()), &p, Err(())),
             ApprovalState::Stale { .. }
         ));
 

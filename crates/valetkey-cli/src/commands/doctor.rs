@@ -5,7 +5,8 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use valetkey_core::paths::os_home_dir;
+use valetkey_core::paths::{check_private, os_home_dir};
+use valetkey_core::safe_read::{MAX_CONFIG_LEN, read_untrusted};
 use valetkey_core::sanitize::for_display;
 use valetkey_core::snapshot::{self, ApprovalState};
 use valetkey_core::{Exposure, NormalizeCx, ValetkeyRoot, project};
@@ -53,8 +54,8 @@ pub(crate) fn run() -> anyhow::Result<ExitCode> {
         root: &root,
         platform: crate::platform(),
     };
-    let current = std::fs::read_to_string(&project.config_path)
-        .map_err(|e| e.to_string())
+    let current = read_untrusted(&project.config_path, MAX_CONFIG_LEN)
+        .map_err(|e| format!("\n  - {}", for_display(&e.to_string())))
         .and_then(|text| {
             crate::registry().parse(&text, &cx).map_err(|ps| {
                 ps.iter()
@@ -67,8 +68,14 @@ pub(crate) fn run() -> anyhow::Result<ExitCode> {
         Err(problems) => o.fail(format!("valetkey.toml has problems:{problems}")),
     }
 
-    let stored = snapshot::load(&root, &project)?;
-    let state = ApprovalState::evaluate(stored, &project, current.as_ref().map_err(Clone::clone));
+    let stored = match snapshot::load(&root, &project) {
+        Ok(s) => s,
+        Err(e) => {
+            o.fail(format!("the stored approval can't be used: {e}"));
+            None
+        }
+    };
+    let state = ApprovalState::evaluate(stored, &project, current.as_ref().map_err(|_| ()));
     match &state {
         ApprovalState::Approved(_) => output::ok("approved on this machine"),
         ApprovalState::NotApproved => o.fail(format!(
@@ -84,7 +91,7 @@ pub(crate) fn run() -> anyhow::Result<ExitCode> {
 
     if let Ok(config) = &current {
         for (id, t) in &config.targets {
-            let exposure = match t.exposure {
+            let exposure = match t.exposure_at_approval {
                 Some(Exposure::Protected) => "protected",
                 Some(Exposure::Exposed) => "exposed",
                 None => "no secret",
@@ -117,9 +124,13 @@ pub(crate) fn run() -> anyhow::Result<ExitCode> {
 fn check_root(root: &ValetkeyRoot, o: &mut Outcome) {
     let dir = root.dir();
     output::ok(format!("valetkey root: {}", dir.display()));
-    match std::fs::metadata(dir) {
-        Ok(meta) => check_private(dir, &meta, o),
-        Err(_) => output::warn("  it doesn't exist yet; `allow` creates it"),
+    if !dir.exists() {
+        output::warn("  it doesn't exist yet; `allow` creates it");
+    }
+    for d in [dir.to_owned(), dir.join("projects")] {
+        if let Err(problem) = check_private(&d) {
+            o.fail(problem);
+        }
     }
     if let (Some(env_home), Ok(db_home)) = (std::env::var_os("HOME"), os_home_dir())
         && Path::new(&env_home) != db_home
@@ -132,22 +143,6 @@ fn check_root(root: &ValetkeyRoot, o: &mut Outcome) {
         ));
     }
 }
-
-#[cfg(unix)]
-fn check_private(dir: &Path, meta: &std::fs::Metadata, o: &mut Outcome) {
-    use std::os::unix::fs::PermissionsExt;
-    let mode = meta.permissions().mode() & 0o777;
-    if mode & 0o077 != 0 {
-        o.fail(format!(
-            "{} is readable or writable by others (mode {mode:o}) → chmod 700 {}",
-            dir.display(),
-            dir.display()
-        ));
-    }
-}
-
-#[cfg(not(unix))]
-fn check_private(_: &Path, _: &std::fs::Metadata, _: &mut Outcome) {}
 
 fn exit(o: &Outcome) -> ExitCode {
     if o.failed { ExitCode::FAILURE } else { ExitCode::SUCCESS }

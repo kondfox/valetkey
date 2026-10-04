@@ -7,6 +7,7 @@
 //! - [`snapshot`]: approved config snapshots (`valetkey allow`).
 //! - [`diff`]: what changed between two configs, and how risky it is.
 //! - [`sanitize`]: making untrusted text safe to show a human.
+//! - [`safe_read`]: reading agent-writable files without following links.
 //!
 //! The spec is `docs/design.md` in the repository; section numbers in comments refer to it.
 
@@ -16,6 +17,7 @@ pub mod paths;
 pub mod platform;
 pub mod problem;
 pub mod project;
+pub mod safe_read;
 pub mod sanitize;
 pub mod secret_ref;
 pub mod snapshot;

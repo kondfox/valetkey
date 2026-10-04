@@ -18,7 +18,9 @@ use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabiliti
 use rmcp::{ErrorData as McpError, Peer, RoleServer, ServerHandler, ServiceExt, tool, tool_handler, tool_router};
 use serde::Serialize;
 use valetkey_core::config::CONFIG_FILE_NAME;
-use valetkey_core::project::{self, Project};
+use valetkey_core::paths::check_private;
+use valetkey_core::project::{self, Project, ProjectError};
+use valetkey_core::safe_read::{MAX_CONFIG_LEN, read_untrusted};
 use valetkey_core::snapshot::{self, ApprovalState};
 use valetkey_core::{Exposure, NormalizeCx, Platform, Registry, ValetkeyRoot};
 
@@ -154,7 +156,17 @@ impl Broker {
         };
         let project = match project::discover(&start) {
             Ok(p) => p,
-            Err(e) => return empty("no_project", None, e.to_string()),
+            Err(e) => {
+                tracing::warn!(error = %e, "project discovery failed");
+                return empty(
+                    "no_project",
+                    None,
+                    format!(
+                        "no usable {CONFIG_FILE_NAME} for this project: {}",
+                        discovery_summary(&e)
+                    ),
+                );
+            }
         };
         let state = self.approval_state(&project);
         let allow_hint = format!(
@@ -186,13 +198,23 @@ impl Broker {
             }
         };
 
+        // Exposure is recomputed from the secret reference on every call; the stored value is
+        // only what the human saw at approval time (§6.0).
+        let root_problem = check_private(self.config.root.dir()).err();
+        if let Some(p) = &root_problem {
+            tracing::warn!(problem = %p, "valetkey root has loose permissions");
+        }
         let targets = snapshot
             .config
             .targets
             .iter()
             .map(|(id, t)| {
-                let reason = if t.exposure == Some(Exposure::Protected) && !dir_verified {
+                let exposure = t.secret.as_ref().map(|s| s.exposure(self.config.platform));
+                let protected = exposure == Some(Exposure::Protected);
+                let reason = if protected && !dir_verified {
                     "refused: the project directory couldn't be verified against the client's MCP roots, so a protected secret won't be used".to_owned()
+                } else if protected && root_problem.is_some() {
+                    format!("refused: the valetkey root has loose permissions; run `{} doctor`", self.config.self_path.display())
                 } else {
                     format!("valetkey {} has no tools for `{}` targets yet (they arrive in M2)", env!("CARGO_PKG_VERSION"), t.kind)
                 };
@@ -200,7 +222,7 @@ impl Broker {
                     id: id.to_string(),
                     kind: t.kind.clone(),
                     writable: t.writable,
-                    secret_exposure: t.exposure,
+                    secret_exposure: exposure,
                     available: false,
                     reason,
                 }
@@ -219,27 +241,44 @@ impl Broker {
         }
     }
 
+    /// The approval state of the working config. The file sits in an agent-writable directory, so
+    /// it's read without following links (§6.2.1), and read or parse errors, which can quote file
+    /// content, go to the log only.
     fn approval_state(&self, project: &Project) -> ApprovalState {
         let cx = NormalizeCx {
             root: &self.config.root,
             platform: self.config.platform,
         };
-        let current = std::fs::read_to_string(&project.config_path)
-            .map_err(|e| format!("can't read {}: {e}", project.config_path.display()))
-            .and_then(|text| {
-                self.config
-                    .registry
-                    .parse(&text, &cx)
-                    .map_err(|ps| ps.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "))
-            });
+        let current = match read_untrusted(&project.config_path, MAX_CONFIG_LEN) {
+            Ok(text) => self.config.registry.parse(&text, &cx).map_err(|problems| {
+                tracing::warn!(?problems, "valetkey.toml doesn't validate");
+            }),
+            Err(e) => {
+                tracing::warn!(error = %e, "can't read valetkey.toml");
+                Err(())
+            }
+        };
         let stored = match snapshot::load(&self.config.root, project) {
             Ok(s) => s,
             Err(e) => {
-                tracing::warn!(error = %e, "can't load snapshot");
+                tracing::warn!(error = %e, "can't use the stored snapshot");
                 None
             }
         };
-        ApprovalState::evaluate(stored, project, current.as_ref().map_err(Clone::clone))
+        ApprovalState::evaluate(stored, project, current.as_ref().map_err(|_| ()))
+    }
+}
+
+/// A short, content-free description of why discovery failed, for the agent.
+fn discovery_summary(e: &ProjectError) -> &'static str {
+    match e {
+        ProjectError::NotFound(_) => "none found in the project directory or its parents",
+        ProjectError::ConfigIsSymlink(_) => "it's a symlink",
+        ProjectError::SymlinkOnPath(_) => "a directory on the way to it is a symlink",
+        ProjectError::NotAbsolute(_) | ProjectError::NotNormalized(_) => {
+            "the client's project directory isn't a normalized absolute path"
+        }
+        ProjectError::Io { .. } => "it can't be inspected",
     }
 }
 

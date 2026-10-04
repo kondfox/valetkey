@@ -103,6 +103,39 @@ pub fn ensure_private_dir(dir: &Path) -> io::Result<()> {
     }
 }
 
+/// Checks that an existing valetkey directory is owned by the current user and not accessible to
+/// others. `Ok(())` if it doesn't exist yet.
+#[cfg(unix)]
+pub fn check_private(dir: &Path) -> Result<(), String> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let meta = match std::fs::symlink_metadata(dir) {
+        Ok(m) => m,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("can't inspect {}: {e}", dir.display())),
+    };
+    if !meta.is_dir() {
+        return Err(format!("{} isn't a directory", dir.display()));
+    }
+    if meta.uid() != nix::unistd::getuid().as_raw() {
+        return Err(format!("{} isn't owned by the current user", dir.display()));
+    }
+    let mode = meta.permissions().mode() & 0o777;
+    if mode & 0o077 != 0 {
+        return Err(format!(
+            "{} is accessible to other users (mode {mode:o}); run: chmod 700 {}",
+            dir.display(),
+            dir.display()
+        ));
+    }
+    Ok(())
+}
+
+/// On Windows, the user profile's ACLs protect the root; nothing extra to check yet.
+#[cfg(not(unix))]
+pub fn check_private(_dir: &Path) -> Result<(), String> {
+    Ok(())
+}
+
 /// The home directory according to the OS user database.
 #[cfg(unix)]
 pub fn os_home_dir() -> Result<PathBuf, PathsError> {
@@ -139,6 +172,19 @@ mod tests {
     fn os_home_dir_exists() {
         let home = os_home_dir().expect("home from the user database");
         assert!(home.is_absolute());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn check_private_flags_loose_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("vk");
+        assert!(check_private(&dir).is_ok(), "missing is fine");
+        ensure_private_dir(&dir).unwrap();
+        assert!(check_private(&dir).is_ok());
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(check_private(&dir).unwrap_err().contains("chmod 700"));
     }
 
     #[cfg(unix)]

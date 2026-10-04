@@ -8,8 +8,8 @@
 use std::io::{BufRead, IsTerminal, Write};
 use std::process::ExitCode;
 
-use anyhow::Context;
 use valetkey_core::diff::{self, Risk};
+use valetkey_core::safe_read::{MAX_CONFIG_LEN, read_untrusted};
 use valetkey_core::sanitize::{for_display, has_non_ascii};
 use valetkey_core::snapshot::{self, Snapshot};
 use valetkey_core::{NormalizeCx, ProjectConfig, project};
@@ -25,8 +25,7 @@ pub(crate) fn run() -> anyhow::Result<ExitCode> {
     }
     let root = crate::resolve_root()?;
     let project = project::discover(&std::env::current_dir()?)?;
-    let text = std::fs::read_to_string(&project.config_path)
-        .with_context(|| format!("can't read {}", project.config_path.display()))?;
+    let text = read_untrusted(&project.config_path, MAX_CONFIG_LEN)?;
 
     let cx = NormalizeCx {
         root: &root,
@@ -46,7 +45,13 @@ pub(crate) fn run() -> anyhow::Result<ExitCode> {
         }
     };
 
-    let previous = snapshot::load(&root, &project)?.filter(|s| s.project_root == project.root);
+    let previous = match snapshot::load(&root, &project) {
+        Ok(s) => s.filter(|s| s.project_root == project.root),
+        Err(e) => {
+            output::warn(format!("ignoring the previous approval: {e}"));
+            None
+        }
+    };
     if previous.as_ref().is_some_and(|s| s.config_hash == config.hash()) {
         output::ok("already approved; nothing changed");
         return Ok(ExitCode::SUCCESS);
@@ -90,12 +95,12 @@ fn show_targets(config: &ProjectConfig) {
     }
     output::line("Targets:");
     for (id, t) in &config.targets {
-        let flag = if has_non_ascii(id.as_str()) {
+        let flag = if has_non_ascii(id.as_str()) || has_non_ascii(&t.connection.to_string()) {
             "  ⚠ non-ASCII characters in the name"
         } else {
             ""
         };
-        let exposure = match t.exposure {
+        let exposure = match t.exposure_at_approval {
             Some(valetkey_core::Exposure::Protected) => "protected secret",
             Some(valetkey_core::Exposure::Exposed) => "exposed secret",
             None => "no secret",

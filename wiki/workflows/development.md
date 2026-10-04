@@ -29,5 +29,7 @@ test, so they never touch a real root. Release builds ignore it
 - an MSRV check
 - `cargo-deny`
 - the commit-message convention check (`AGENTS.md`)
+- on Linux and macOS: a release build plus `scripts/check_release_ignores_dev_root.sh`, which proves
+  that a release ignores `VALETKEY_DEV_ROOT`
 
 Every push and pull request runs it, with `contents: read` permissions and no secrets.
