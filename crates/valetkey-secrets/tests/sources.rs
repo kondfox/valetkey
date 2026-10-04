@@ -230,3 +230,36 @@ async fn local_secrets_can_be_managed() {
     assert!(!LocalSource::remove(&e.root, "app").unwrap());
     assert!(LocalSource::list(&e.root).unwrap().is_empty());
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn env_file_refuses_hard_links_and_reports_bad_syntax() {
+    let e = env();
+    let outside = e.base.join("fenced.env");
+    std::fs::write(&outside, "KEY=CANARY-fenced\n").unwrap();
+    std::fs::hard_link(&outside, e.project.join(".env")).unwrap();
+    let err = fetch(&e, &UserConfig::default(), "env-file://.env#KEY")
+        .await
+        .unwrap_err();
+    assert!(err.contains("can't read the env-file"), "{err}");
+
+    std::fs::remove_file(e.project.join(".env")).unwrap();
+    std::fs::write(e.project.join(".env"), "KEY=\"CANARY never closed\n").unwrap();
+    let err = fetch(&e, &UserConfig::default(), "env-file://.env#KEY")
+        .await
+        .unwrap_err();
+    assert!(err.contains("can't read reliably") && err.contains("line 1"), "{err}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_loose_secrets_directory_is_refused() {
+    use std::os::unix::fs::PermissionsExt;
+    let e = env();
+    let dir = e.root.secrets_dir();
+    valetkey_core::paths::ensure_private_dir(&dir).unwrap();
+    write_private(&dir.join("app"), "pw", 0o600);
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let err = fetch(&e, &UserConfig::default(), "local://app").await.unwrap_err();
+    assert!(err.contains("isn't private"), "{err}");
+}

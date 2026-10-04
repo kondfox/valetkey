@@ -3,6 +3,7 @@
 Append-only, newest first, one self-contained line per entry (format in [[CLAUDE]]).
 
 - 2026-10-05 · M2b · Recorded the role-switch escape and PREPARE TRANSACTION finding in integrations/postgres; new features/sql-tools, tech-debt/target-enum-in-tool-schemas; updated postgres-read-only-guards, valetkey-targets-tool, glossary.
+- 2026-10-05 · M2a review · Documented the strict gcloud-config checks, shim refusal and home-dir refusal (features/valetkey-setup), dotenv syntax and its difference from expanding loaders, and the runner's post-reap rule (features/secret-sources).
 - 2026-10-05 · M2a · Added integrations/gcloud (output format and Python lookup verified in the SDK 496 source), features valetkey-setup, valetkey-secret and secret-sources, decision m2-scope, 2 glossary terms.
 - 2026-10-04 · M1 tests · Documented the testable allow flow (features/valetkey-allow), the pinned canonical-form tests and coverage commands (workflows/development).
 - 2026-10-04 · M1 review · Recorded safe reads of agent-writable files (no links, FIFOs; parse errors only in the log), per-call exposure, root permission checks and the release dev-root CI guard in features/valetkey-targets-tool, features/valetkey-doctor and workflows/development.

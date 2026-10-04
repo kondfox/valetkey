@@ -32,13 +32,23 @@ pub(crate) fn run() -> anyhow::Result<ExitCode> {
         return Ok(ExitCode::FAILURE);
     }
     let root = crate::resolve_root()?;
-    let project = project::discover(&std::env::current_dir()?).ok().map(|p| p.root);
-    let policy = TrustPolicy::for_this_machine(os_home_dir()?, project);
+    let home = os_home_dir()?;
+    let cwd = std::env::current_dir()?;
+    // A session started in the home directory can write all of it, so no path under home could
+    // be trusted from here (M2a review).
+    if std::fs::canonicalize(&cwd).ok() == std::fs::canonicalize(&home).ok() {
+        output::fail("run valetkey setup from a project directory or anywhere but your home directory");
+        return Ok(ExitCode::FAILURE);
+    }
+    let project = project::discover(&cwd).ok().map(|p| p.root);
+    let policy = TrustPolicy::for_this_machine(home, project);
     let resolve = |name: &str| which::which(name).ok();
+    let cloudsdk_config = std::env::var_os("CLOUDSDK_CONFIG").map(PathBuf::from);
     let outcome = review(
         &root,
         &policy,
         &resolve,
+        cloudsdk_config.as_deref(),
         &mut std::io::stdin().lock(),
         &mut std::io::stdout().lock(),
     )?;
@@ -53,6 +63,7 @@ pub(crate) fn review(
     root: &ValetkeyRoot,
     policy: &TrustPolicy,
     resolve: &dyn Fn(&str) -> Option<PathBuf>,
+    cloudsdk_config: Option<&Path>,
     input: &mut dyn BufRead,
     out: &mut dyn Write,
 ) -> anyhow::Result<Outcome> {
@@ -66,7 +77,7 @@ pub(crate) fn review(
         )?;
         return Ok(Outcome::NothingToDo);
     };
-    match plan_gcloud(&found, policy, resolve) {
+    match plan_gcloud(&found, policy, resolve, cloudsdk_config) {
         Ok((tool, warnings)) => {
             writeln!(out, "gcloud:  {}", for_display(&tool.path.display().to_string()))?;
             for (k, v) in &tool.env {
@@ -117,6 +128,7 @@ fn plan_gcloud(
     found: &Path,
     policy: &TrustPolicy,
     resolve: &dyn Fn(&str) -> Option<PathBuf>,
+    cloudsdk_config: Option<&Path>,
 ) -> Result<(ToolConfig, Vec<String>), String> {
     let gcloud = std::fs::canonicalize(found).map_err(|e| e.to_string())?;
     let bin = gcloud.parent().ok_or("gcloud has no parent directory")?;
@@ -142,6 +154,12 @@ fn plan_gcloud(
         std::fs::canonicalize(&bundled).map_err(|e| e.to_string())?
     } else {
         let p = resolve("python3").ok_or("no python3 on PATH, and the SDK has no bundled Python")?;
+        if trust::is_shim(&p) {
+            return Err(format!(
+                "python3 on PATH is a version-manager shim ({}), which picks the interpreter from files an agent can write; put a concrete Python first on PATH",
+                p.display()
+            ));
+        }
         std::fs::canonicalize(p).map_err(|e| e.to_string())?
     };
     warnings.extend(trust::check(&python, policy)?);
@@ -149,11 +167,27 @@ fn plan_gcloud(
         warnings.push("/usr/bin/python3 is Apple's stub; it can prompt to install developer tools. A Homebrew or python.org Python is more reliable".into());
     }
 
+    // What steers gcloud (endpoints, proxy, CA bundle, account) must be as trusted as gcloud
+    // itself, and even group-writable is too much: the SDK's installation `properties` file and
+    // the config directory (M2a review, blocker B1).
+    let installation_properties = sdk_root.join("properties");
+    if installation_properties.exists() {
+        trust::check_strict(&installation_properties, policy).map_err(|e| format!("the SDK's properties file: {e}"))?;
+    }
     let mut env = std::collections::BTreeMap::new();
     env.insert("CLOUDSDK_PYTHON".to_owned(), python.display().to_string());
-    if let Some(config) = std::env::var_os("CLOUDSDK_CONFIG") {
-        let config = std::fs::canonicalize(config).map_err(|e| format!("CLOUDSDK_CONFIG: {e}"))?;
-        env.insert("CLOUDSDK_CONFIG".to_owned(), config.display().to_string());
+    match cloudsdk_config {
+        Some(config) => {
+            let config = std::fs::canonicalize(config).map_err(|e| format!("CLOUDSDK_CONFIG: {e}"))?;
+            trust::check_strict(&config, policy).map_err(|e| format!("CLOUDSDK_CONFIG: {e}"))?;
+            env.insert("CLOUDSDK_CONFIG".to_owned(), config.display().to_string());
+        }
+        None => {
+            let default = policy.home.join(".config/gcloud");
+            if let Ok(default) = std::fs::canonicalize(&default) {
+                trust::check_strict(&default, policy).map_err(|e| format!("gcloud's config directory: {e}"))?;
+            }
+        }
     }
     Ok((ToolConfig { path: gcloud, env }, warnings))
 }
@@ -195,12 +229,27 @@ mod tests {
     }
 
     fn go(f: &Fx, gcloud: Option<PathBuf>, answer: &str) -> (Outcome, String) {
-        let resolve = |name: &str| if name == "gcloud" { gcloud.clone() } else { None };
+        go_with(f, gcloud, None, None, answer)
+    }
+
+    fn go_with(
+        f: &Fx,
+        gcloud: Option<PathBuf>,
+        python: Option<PathBuf>,
+        config: Option<&Path>,
+        answer: &str,
+    ) -> (Outcome, String) {
+        let resolve = |name: &str| match name {
+            "gcloud" => gcloud.clone(),
+            "python3" => python.clone(),
+            _ => None,
+        };
         let mut out = Vec::new();
         let o = review(
             &f.root,
             &f.policy,
             &resolve,
+            config,
             &mut Cursor::new(answer.as_bytes().to_vec()),
             &mut out,
         )
@@ -245,6 +294,86 @@ mod tests {
         assert_eq!(o, Outcome::NothingToDo);
         assert!(out.contains("current project"), "{out}");
         assert!(UserConfig::load(&f.root).unwrap().tools.is_empty());
+    }
+
+    #[test]
+    fn cloudsdk_config_must_be_trusted() {
+        let f = fx();
+        // Inside the project: an agent could rewrite gcloud's endpoint, proxy or CA settings.
+        std::fs::create_dir_all(f.base.join("repo/.gcloud")).unwrap();
+        let (o, out) = go_with(
+            &f,
+            Some(f.base.join("sdk/bin/gcloud")),
+            None,
+            Some(&f.base.join("repo/.gcloud")),
+            "yes\n",
+        );
+        assert_eq!(o, Outcome::NothingToDo, "{out}");
+        assert!(
+            out.contains("CLOUDSDK_CONFIG") && out.contains("current project"),
+            "{out}"
+        );
+
+        // In a temp dir.
+        let mut f2 = fx();
+        std::fs::create_dir_all(f2.base.join("tmp/gcloud")).unwrap();
+        f2.policy.temp_dirs = vec![f2.base.join("tmp")];
+        let (o, out) = go_with(
+            &f2,
+            Some(f2.base.join("sdk/bin/gcloud")),
+            None,
+            Some(&f2.base.join("tmp/gcloud")),
+            "yes\n",
+        );
+        assert_eq!(o, Outcome::NothingToDo, "{out}");
+        assert!(out.contains("temp directory"), "{out}");
+
+        // Group-writable: a warning elsewhere, a refusal here.
+        use std::os::unix::fs::PermissionsExt;
+        let cfg = f.base.join("gcloud-config");
+        std::fs::create_dir_all(&cfg).unwrap();
+        std::fs::set_permissions(&cfg, std::fs::Permissions::from_mode(0o770)).unwrap();
+        let (o, out) = go_with(&f, Some(f.base.join("sdk/bin/gcloud")), None, Some(&cfg), "yes\n");
+        assert_eq!(o, Outcome::NothingToDo, "{out}");
+        assert!(out.contains("group-writable"), "{out}");
+
+        // A private one outside any project is recorded.
+        std::fs::set_permissions(&cfg, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let (o, out) = go_with(&f, Some(f.base.join("sdk/bin/gcloud")), None, Some(&cfg), "yes\n");
+        assert_eq!(o, Outcome::Saved, "{out}");
+        assert_eq!(
+            UserConfig::load(&f.root).unwrap().tool("gcloud").unwrap().env["CLOUDSDK_CONFIG"],
+            cfg.display().to_string()
+        );
+    }
+
+    #[test]
+    fn a_shim_or_project_python_is_refused() {
+        let f = fx();
+        std::fs::remove_file(f.base.join("sdk/platform/bundledpythonunix/bin/python3")).unwrap();
+        std::fs::create_dir_all(f.base.join("pyenv/shims")).unwrap();
+        std::fs::write(f.base.join("pyenv/shims/python3"), "").unwrap();
+        let (o, out) = go_with(
+            &f,
+            Some(f.base.join("sdk/bin/gcloud")),
+            Some(f.base.join("pyenv/shims/python3")),
+            None,
+            "yes\n",
+        );
+        assert_eq!(o, Outcome::NothingToDo, "{out}");
+        assert!(out.contains("shim"), "{out}");
+
+        std::fs::create_dir_all(f.base.join("repo/.venv/bin")).unwrap();
+        std::fs::write(f.base.join("repo/.venv/bin/python3"), "").unwrap();
+        let (o, out) = go_with(
+            &f,
+            Some(f.base.join("sdk/bin/gcloud")),
+            Some(f.base.join("repo/.venv/bin/python3")),
+            None,
+            "yes\n",
+        );
+        assert_eq!(o, Outcome::NothingToDo, "{out}");
+        assert!(out.contains("current project"), "{out}");
     }
 
     #[test]

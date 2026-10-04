@@ -60,7 +60,19 @@ impl SecretCache {
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<SecretString, SourceError>>,
     {
-        let slot = self.slots.lock().expect("cache lock").entry(key).or_default().clone();
+        let slot = {
+            let mut slots = self.slots.lock().expect("cache lock");
+            // Drop expired entries that nobody is fetching right now, so config changes don't
+            // grow the map for the broker's lifetime.
+            if slots.len() > 32 {
+                let ttl = self.ttl;
+                slots.retain(|_, s| {
+                    s.try_lock()
+                        .map_or(true, |e| e.as_ref().is_some_and(|e| e.fetched_at.elapsed() < ttl))
+                });
+            }
+            slots.entry(key).or_default().clone()
+        };
         let mut entry = slot.lock().await;
         if let Some(e) = entry.as_ref()
             && e.fetched_at.elapsed() < self.ttl
@@ -139,6 +151,32 @@ mod tests {
         assert!(cache.get_or_fetch(key("h3"), failing).await.is_err());
         cache.get_or_fetch(key("h3"), fetch).await.unwrap();
         assert_eq!(n.load(Ordering::SeqCst), 3, "the failure wasn't cached");
+    }
+
+    #[tokio::test]
+    async fn invalidating_during_a_fetch_doesnt_keep_the_old_value() {
+        let cache = Arc::new(SecretCache::default());
+        let n = Arc::new(AtomicUsize::new(0));
+        let (c, n2) = (cache.clone(), n.clone());
+        let slow = tokio::spawn(async move {
+            c.get_or_fetch(key("h"), || async move {
+                n2.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                Ok(SecretString::from("old"))
+            })
+            .await
+            .unwrap()
+            .expose_secret()
+            .to_owned()
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        cache.invalidate(&key("h"));
+        assert_eq!(slow.await.unwrap(), "old", "the in-flight caller still gets its value");
+        let fresh = cache
+            .get_or_fetch(key("h"), || async { Ok(SecretString::from("new")) })
+            .await
+            .unwrap();
+        assert_eq!(fresh.expose_secret(), "new", "the next call fetches again");
     }
 
     #[tokio::test]

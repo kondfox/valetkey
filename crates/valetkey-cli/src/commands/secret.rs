@@ -37,6 +37,8 @@ pub(crate) fn run(cmd: SecretCommand) -> anyhow::Result<ExitCode> {
                 );
                 return Ok(ExitCode::FAILURE);
             }
+            // Validate before the human types the value.
+            LocalSource::validate_id(&id)?;
             let value = rpassword::prompt_password(format!("Value for local://{id} (not shown): "))?;
             if value.is_empty() {
                 output::fail("empty value; nothing stored");
