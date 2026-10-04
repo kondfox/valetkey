@@ -210,7 +210,9 @@ mod tests {
         fs::write(&secret, "TOKEN").unwrap();
         let link = tmp.path().join("valetkey.toml");
         if let Err(e) = std::os::windows::fs::symlink_file(&secret, &link) {
-            // Creating symlinks needs Developer Mode or admin rights; CI runners have them.
+            // Creating symlinks needs Developer Mode or admin rights. CI runners have them, so
+            // there a failure to create one is a real failure, not a reason to skip.
+            assert!(std::env::var_os("CI").is_none(), "can't create a symlink in CI: {e}");
             eprintln!("skipping: can't create a symlink here: {e}");
             return;
         }
