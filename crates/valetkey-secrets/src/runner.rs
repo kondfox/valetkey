@@ -88,13 +88,7 @@ pub async fn run(invocation: &Invocation, limits: Limits) -> Result<SecretBox<Ve
     #[cfg(unix)]
     cmd.process_group(0);
 
-    let mut child = cmd.spawn().map_err(|source| match source.kind() {
-        std::io::ErrorKind::NotFound => RunError::NotFound(program.clone()),
-        _ => RunError::Spawn {
-            program: program.clone(),
-            source,
-        },
-    })?;
+    let mut child = spawn(&mut cmd, program).await?;
     // Kills the group on every exit path, including when the caller drops this future.
     let pid = child.id();
     let _group = GroupKiller(pid);
@@ -148,6 +142,34 @@ pub async fn run(invocation: &Invocation, limits: Limits) -> Result<SecretBox<Ve
         });
     }
     Ok(out)
+}
+
+/// Spawns, retrying briefly on "text file busy" (ETXTBSY). On Linux, exec fails with it while any
+/// process still holds the program open for writing; that happens when the tool is being
+/// updated, and when another thread forks right after the file was written (tests).
+async fn spawn(
+    cmd: &mut tokio::process::Command,
+    program: &std::path::Path,
+) -> Result<tokio::process::Child, RunError> {
+    let mut attempts = 0;
+    loop {
+        match cmd.spawn() {
+            Ok(child) => return Ok(child),
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && attempts < 5 => {
+                attempts += 1;
+                tokio::time::sleep(Duration::from_millis(20 * attempts)).await;
+            }
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+                return Err(RunError::NotFound(program.to_owned()));
+            }
+            Err(source) => {
+                return Err(RunError::Spawn {
+                    program: program.to_owned(),
+                    source,
+                });
+            }
+        }
+    }
 }
 
 /// Sends SIGKILL to the child's process group when dropped.
