@@ -2,6 +2,7 @@
 
 Append-only, newest first, one self-contained line per entry (format in [[CLAUDE]]).
 
+- 2026-10-05 · M2a · Added integrations/gcloud (output format and Python lookup verified in the SDK 496 source), features valetkey-setup, valetkey-secret and secret-sources, decision m2-scope, 2 glossary terms.
 - 2026-10-04 · M1 tests · Documented the testable allow flow (features/valetkey-allow), the pinned canonical-form tests and coverage commands (workflows/development).
 - 2026-10-04 · M1 review · Recorded safe reads of agent-writable files (no links, FIFOs; parse errors only in the log), per-call exposure, root permission checks and the release dev-root CI guard in features/valetkey-targets-tool, features/valetkey-doctor and workflows/development.
 - 2026-10-04 · M1 · Added the worked end-to-end example to architecture (one valetkey_targets call), new features/ (init, allow, doctor, valetkey_targets), workflows/development, tech-debt/mcp-roots-deprecation, decisions dev-root-only-in-debug-builds and toolchain-and-msrv; 4 glossary terms.

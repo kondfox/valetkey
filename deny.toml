@@ -34,6 +34,7 @@ allow-wildcard-paths = true
 deny = [
     { crate = "rmcp", wrappers = ["valetkey-mcp"], reason = "only valetkey-mcp imports the MCP SDK" },
     { crate = "tokio-postgres", wrappers = ["valetkey-postgres"], reason = "only valetkey-postgres imports the Postgres driver" },
+    { crate = "keyring", wrappers = ["valetkey-secrets"], reason = "only valetkey-secrets talks to the OS keyring" },
 ]
 
 [sources]

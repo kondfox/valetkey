@@ -14,23 +14,29 @@ publish = false
 valetkey-core = { path = "crates/valetkey-core" }
 valetkey-postgres = { path = "crates/valetkey-postgres" }
 valetkey-mcp = { path = "crates/valetkey-mcp" }
+valetkey-secrets = { path = "crates/valetkey-secrets" }
 
 anyhow = "1.0.104"
 blake3 = "1.8.7"
+dotenvy = "0.15.7"
+keyring = "4.2.0"
+rpassword = "7.5.4"
+secrecy = "0.10.3"
 clap = { version = "4.6.7", features = ["derive"] }
 known-folders = "1.4.2"
-nix = { version = "0.31.3", features = ["user", "fs"] }
+nix = { version = "0.31.3", features = ["user", "fs", "signal", "process"] }
 rmcp = { version = "3.5.0", default-features = false }
 schemars = "1.2.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 tempfile = "3.27.0"
 thiserror = "2.0.21"
-tokio = { version = "1.53.2", features = ["macros", "rt-multi-thread", "io-std", "io-util"] }
+tokio = { version = "1.53.2", features = ["macros", "rt-multi-thread", "io-std", "io-util", "process", "time", "sync"] }
 toml = "1.1.6"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std", "env-filter"] }
 url = "2.5"
+which = "8.0.6"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

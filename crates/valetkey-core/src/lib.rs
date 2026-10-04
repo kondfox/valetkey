@@ -8,6 +8,8 @@
 //! - [`diff`]: what changed between two configs, and how risky it is.
 //! - [`sanitize`]: making untrusted text safe to show a human.
 //! - [`safe_read`]: reading agent-writable files without following links.
+//! - [`secret_source`]: the interface every secret source implements.
+//! - [`user_config`]: `~/.valetkey/config.toml`, the human-approved tool paths.
 //!
 //! The spec is `docs/design.md` in the repository; section numbers in comments refer to it.
 
@@ -20,7 +22,9 @@ pub mod project;
 pub mod safe_read;
 pub mod sanitize;
 pub mod secret_ref;
+pub mod secret_source;
 pub mod snapshot;
+pub mod user_config;
 
 pub use config::{NormalizeCx, NormalizedTarget, ProjectConfig, Registry, TargetId, TargetKind};
 pub use paths::ValetkeyRoot;

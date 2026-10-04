@@ -27,6 +27,8 @@ pub enum SafeReadError {
     HardLinked(PathBuf),
     #[error("{0} isn't owned by the current user")]
     WrongOwner(PathBuf),
+    #[error("{0} is readable or writable by other users; it must be private (chmod 600)")]
+    NotPrivate(PathBuf),
     #[error("{path} is larger than {max} bytes")]
     TooLarge { path: PathBuf, max: u64 },
     #[error("{0} isn't valid UTF-8")]
@@ -38,18 +40,47 @@ pub enum SafeReadError {
 /// Reads a UTF-8 text file the agent may have tampered with. See the module docs.
 pub fn read_untrusted(path: &Path, max_len: u64) -> Result<String, SafeReadError> {
     let file = open_no_follow(path)?;
+    read_checked(file, path, max_len, false)
+}
+
+/// Like [`read_untrusted`], and the file must also be private to its owner (mode `0600` or
+/// stricter on unix). For valetkey's own secret files.
+pub fn read_private(path: &Path, max_len: u64) -> Result<String, SafeReadError> {
+    let file = open_no_follow(path)?;
+    read_checked(file, path, max_len, true)
+}
+
+/// Reads `relative` (a `/`-separated path without `.`, `..` or empty segments) **beneath**
+/// `base`, opening one component at a time without following symlinks. A symlinked directory
+/// anywhere on the way is refused, so the file can't be outside `base`; and because each step
+/// opens relative to the previous directory handle, swapping a directory for a symlink after a
+/// check doesn't help. For `env-file://` paths (§6.2.1).
+pub fn read_untrusted_beneath(base: &Path, relative: &str, max_len: u64) -> Result<String, SafeReadError> {
+    let full = base.join(relative);
+    let segments: Vec<&str> = relative.split('/').collect();
+    if segments.iter().any(|s| s.is_empty() || *s == "." || *s == "..") {
+        return Err(SafeReadError::Link(full));
+    }
+    let file = open_beneath(base, &segments, &full)?;
+    read_checked(file, &full, max_len, false)
+}
+
+fn read_checked(file: File, path: &Path, max_len: u64, private: bool) -> Result<String, SafeReadError> {
     let meta = file.metadata().map_err(|source| SafeReadError::Io {
         path: path.to_owned(),
         source,
     })?;
     check_handle(path, &meta)?;
+    if private {
+        check_private_mode(path, &meta)?;
+    }
     if meta.len() > max_len {
         return Err(SafeReadError::TooLarge {
             path: path.to_owned(),
             max: max_len,
         });
     }
-    let mut bytes = Vec::new();
+    let mut bytes = Vec::with_capacity(usize::try_from(meta.len()).unwrap_or(0));
     // Bounded even if the file grows after the fstat.
     file.take(max_len + 1)
         .read_to_end(&mut bytes)
@@ -64,6 +95,58 @@ pub fn read_untrusted(path: &Path, max_len: u64) -> Result<String, SafeReadError
         });
     }
     String::from_utf8(bytes).map_err(|_| SafeReadError::NotUtf8(path.to_owned()))
+}
+
+#[cfg(unix)]
+fn check_private_mode(path: &Path, meta: &std::fs::Metadata) -> Result<(), SafeReadError> {
+    use std::os::unix::fs::PermissionsExt;
+    if meta.permissions().mode() & 0o077 != 0 {
+        return Err(SafeReadError::NotPrivate(path.to_owned()));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn check_private_mode(_: &Path, _: &std::fs::Metadata) -> Result<(), SafeReadError> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn open_beneath(base: &Path, segments: &[&str], full: &Path) -> Result<File, SafeReadError> {
+    use nix::fcntl::{OFlag, open, openat};
+    use nix::sys::stat::Mode;
+    let errno = |e: nix::errno::Errno| match e {
+        nix::errno::Errno::ENOENT => SafeReadError::NotFound(full.to_owned()),
+        nix::errno::Errno::ELOOP | nix::errno::Errno::ENOTDIR => SafeReadError::Link(full.to_owned()),
+        e => SafeReadError::Io {
+            path: full.to_owned(),
+            source: io::Error::from(e),
+        },
+    };
+    let dir_flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+    let mut dir = open(base, dir_flags, Mode::empty()).map_err(errno)?;
+    let (last, dirs) = segments.split_last().expect("at least one segment");
+    for segment in dirs {
+        dir = openat(&dir, *segment, dir_flags, Mode::empty()).map_err(errno)?;
+    }
+    let file_flags = OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_NOCTTY | OFlag::O_CLOEXEC;
+    let fd = openat(&dir, *last, file_flags, Mode::empty()).map_err(errno)?;
+    Ok(File::from(fd))
+}
+
+/// Windows: no `openat`; check each component for reparse points, then open without following.
+/// Native Windows is unfenced (§2.7), so env-files there are never protected anyway.
+#[cfg(not(unix))]
+fn open_beneath(base: &Path, segments: &[&str], full: &Path) -> Result<File, SafeReadError> {
+    let mut path = base.to_owned();
+    for segment in &segments[..segments.len() - 1] {
+        path.push(segment);
+        let meta = std::fs::symlink_metadata(&path).map_err(|_| SafeReadError::NotFound(full.to_owned()))?;
+        if meta.file_type().is_symlink() || !meta.is_dir() {
+            return Err(SafeReadError::Link(full.to_owned()));
+        }
+    }
+    open_no_follow(full)
 }
 
 #[cfg(unix)]
@@ -218,6 +301,56 @@ mod tests {
         }
         let result = read_untrusted(&link, MAX_CONFIG_LEN);
         assert!(matches!(result, Err(SafeReadError::Link(_))), "{result:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn beneath_reads_nested_files_but_refuses_symlinked_directories() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().join("project");
+        fs::create_dir_all(base.join("apps/web")).unwrap();
+        fs::write(base.join("apps/web/.env"), "K=v\n").unwrap();
+        assert_eq!(
+            read_untrusted_beneath(&base, "apps/web/.env", MAX_CONFIG_LEN).unwrap(),
+            "K=v\n"
+        );
+
+        // `apps/link` → a directory outside the project that holds a "fenced" file.
+        let outside = tmp.path().join("aws");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("credentials"), "SECRET").unwrap();
+        std::os::unix::fs::symlink(&outside, base.join("apps/link")).unwrap();
+        let r = read_untrusted_beneath(&base, "apps/link/credentials", MAX_CONFIG_LEN);
+        assert!(matches!(r, Err(SafeReadError::Link(_))), "{r:?}");
+        // A plain read through the same path would follow it: the reason this function exists.
+        assert_eq!(
+            fs::read_to_string(base.join("apps/link/credentials")).unwrap(),
+            "SECRET"
+        );
+    }
+
+    #[test]
+    fn beneath_rejects_dot_segments() {
+        let tmp = tempfile::tempdir().unwrap();
+        for rel in ["../x", "a/../b", "./a", "a//b", ""] {
+            assert!(
+                read_untrusted_beneath(tmp.path(), rel, MAX_CONFIG_LEN).is_err(),
+                "{rel}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_files_must_be_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("secret");
+        fs::write(&p, "s").unwrap();
+        fs::set_permissions(&p, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(matches!(read_private(&p, 10), Err(SafeReadError::NotPrivate(_))));
+        fs::set_permissions(&p, fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(read_private(&p, 10).unwrap(), "s");
     }
 
     #[test]

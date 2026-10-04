@@ -9,8 +9,10 @@ use valetkey_core::paths::{check_private, os_home_dir};
 use valetkey_core::safe_read::{MAX_CONFIG_LEN, read_untrusted};
 use valetkey_core::sanitize::for_display;
 use valetkey_core::snapshot::{self, ApprovalState};
-use valetkey_core::{Exposure, NormalizeCx, ValetkeyRoot, project};
+use valetkey_core::user_config::UserConfig;
+use valetkey_core::{Exposure, NormalizeCx, SecretRef, ValetkeyRoot, project};
 use valetkey_postgres::SOCKET_FILE;
+use valetkey_secrets::trust::{self, TrustPolicy};
 
 use crate::output;
 
@@ -89,6 +91,16 @@ pub(crate) fn run() -> anyhow::Result<ExitCode> {
         }
     }
 
+    let user = match UserConfig::load(&root) {
+        Ok(u) => u,
+        Err(e) => {
+            o.fail(format!(
+                "{} can't be used: {e} → re-run: {me} setup",
+                root.user_config_file().display()
+            ));
+            UserConfig::default()
+        }
+    };
     if let Ok(config) = &current {
         for (id, t) in &config.targets {
             let exposure = match t.exposure_at_approval {
@@ -102,6 +114,7 @@ pub(crate) fn run() -> anyhow::Result<ExitCode> {
                 t.kind,
                 if t.writable { ", writable" } else { "" }
             ));
+            check_secret_source(&root, &user, id.as_str(), t.secret.as_ref(), &mut o);
             if let Some(alias) = t.connection.get("socket").and_then(|v| v.as_str()) {
                 let dir = root.socket_dir(alias);
                 if dir.join(SOCKET_FILE).exists() {
@@ -117,8 +130,43 @@ pub(crate) fn run() -> anyhow::Result<ExitCode> {
         }
     }
 
-    output::warn("fence checks (the agent's sandbox settings) arrive in M4; no tool uses a secret before then");
+    output::warn(
+        "fence checks (the agent's sandbox settings) arrive in M4; until then protected secrets are only used with require_fence = false",
+    );
     Ok(exit(&o))
+}
+
+/// Whether a target's secret source is ready: `local://` secrets exist, `gcp-sm://` has a
+/// configured gcloud that still passes `setup`'s checks.
+fn check_secret_source(root: &ValetkeyRoot, user: &UserConfig, id: &str, secret: Option<&SecretRef>, o: &mut Outcome) {
+    let me = output::self_path();
+    let id = for_display(id);
+    match secret {
+        Some(SecretRef::Local { id: secret_id }) => {
+            if !root.secrets_dir().join(secret_id).exists() {
+                o.fail(format!(
+                    "  {id}: local://{secret_id} isn't set → run in a normal terminal: {me} secret set {secret_id}"
+                ));
+            }
+        }
+        Some(SecretRef::GcpSm { .. }) => match user.tool("gcloud") {
+            None => o.fail(format!(
+                "  {id}: gcloud isn't configured → run in a normal terminal: {me} setup"
+            )),
+            Some(tool) => {
+                let home = os_home_dir().unwrap_or_default();
+                let policy = TrustPolicy::for_this_machine(home, None);
+                let mut paths = vec![tool.path.clone()];
+                paths.extend(tool.env.get("CLOUDSDK_PYTHON").map(Into::into));
+                for path in paths {
+                    if let Err(problem) = trust::check(&path, &policy) {
+                        o.fail(format!("  {id}: {} → re-run: {me} setup", for_display(&problem)));
+                    }
+                }
+            }
+        },
+        _ => {}
+    }
 }
 
 fn check_root(root: &ValetkeyRoot, o: &mut Outcome) {

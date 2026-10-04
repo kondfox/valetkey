@@ -145,7 +145,8 @@ Every result carries metadata: the target, the **verified identity** of the far 
 ```
 valetkey status            targets, fence state, approval state
 valetkey approve [ID]      review and approve a pending write (no ID: list pending ones) (§6.10)
-valetkey secret set ID     store a secret in valetkey's local store, `local://` (§6.0)
+valetkey setup             record which vendor CLIs (gcloud) the broker may run (§6.8)
+valetkey secret set ID     store a secret in valetkey's local store, `local://` (§6.0); also `rm`, `ls`
 valetkey log [--follow]    audit log of tool calls
 valetkey doctor --fence    probe the fence from inside the agent's sandbox (§6.6)
 valetkey self-update
@@ -394,6 +395,9 @@ file the fence denies to the agent (the confused-deputy problem).
   handle**: a regular file, owned by the current user, exactly one hard link, under a size cap.
   Read and parse errors go to the broker's log only. The agent gets a fixed message, because
   parser errors quote file lines (M1 review).
+- `env-file://` files are opened **beneath** the project root one path component at a time
+  (`openat` with `O_NOFOLLOW`), so a symlinked directory anywhere on the path is refused, and
+  swapping one in after a check doesn't help.
 - `env-file://` paths are relative to the canonical project root. Absolute paths, `..` and `~` are
   rejected. The file is opened without following symlinks, and the opened path must stay under the
   root.
@@ -629,10 +633,17 @@ runs it on macOS and Linux runners, where the agent isn't present.
 - sets the credential-location variables (`CLOUDSDK_CONFIG`, `AWS_SHARED_CREDENTIALS_FILE`, …) for
   each vendor CLI **from the values stored in `~/.valetkey/config.toml`**, never from the inherited
   environment
-- replaces `PATH` with a fixed one: system dirs plus the vendor CLIs' absolute paths, which a
-  human's `valetkey doctor` resolved and stored in `~/.valetkey/config.toml`. `doctor` refuses to
-  store a path inside a project, a temp dir or any other dir the agent can write, and shows each
-  path for confirmation.
+- replaces `PATH` with a fixed one: the tool's own directory plus `/usr/bin:/bin`. Tool paths come
+  only from `~/.valetkey/config.toml`, which a human writes with the interactive `valetkey setup`
+  (not `doctor`, which stays read-only). `setup` checks the tool, the SDK tree it executes from
+  (`bin/`, `lib/`) and its interpreter, and refuses any of them that is:
+  - inside the current project, inside a directory that contains `.git`, `valetkey.toml` or
+    `.claude` below the home directory, or inside a temp dir
+  - owned by another user, or under a world-writable directory
+
+  It records the interpreter as `CLOUDSDK_PYTHON` (gcloud would otherwise search `PATH` and may hit
+  macOS's `/usr/bin/python3` stub). `doctor` re-checks the recorded paths and says when to re-run
+  `setup`.
 - never reads or executes anything from the shared sandbox temp dir (`/tmp/claude-<uid>`); neither
   do `doctor` or the plugin hook.
 - ignores TLS and proxy variables. A corporate CA bundle or proxy goes in the user-level config,
@@ -862,8 +873,8 @@ same targets, without changing adapters: they only see a socket path.
 |---|---|---|
 | M0 | Spike, no product code | **Done 2026-10-04.** Results in the wiki: `wiki/integrations/` pages and `wiki/decisions/2026-10-04-m0-go-no-go.md` |
 | M1 | Skeleton | **Done 2026-10-04.** Workspace (`valetkey-core`, `-postgres` config only, `-mcp`, `-cli`), CI, config + schema, basic `init`/`allow`/`doctor`, MCP server with `valetkey_targets`. Crates appear with the milestone that needs them. `install` (copy + register) moves to M5 |
-| M2 | Postgres read path | `env-file`, `local`, `keyring` and `gcp-sm` sources; auth guard; `sql_query`, `sql_describe`; guard integration tests |
-| M3 | Write path | `sql_execute`, `valetkey approve` (out-of-band approval), audit log |
+| M2 | Postgres read path | Two PRs. **M2a:** `valetkey-secrets` (process runner; `env-file`, `local`, `keyring`, `gcp-sm`; single-flight cache), `setup`, `secret`. **M2b:** auth guard, message-size cap, portal reads, role-closure and catalog checks, `sql_query`, `sql_describe`, guard integration tests. Protected targets stay refused unless `require_fence = false` until M4 |
+| M3 | Write path and TLS | `sql_execute`, `valetkey approve` (out-of-band approval), audit log; verified TLS for remote targets (moved from M2) |
 | M4 | Fence | Claude Code profile: generate, detect, probe; unfenced mode; fence CI on macOS and Linux |
 | M5 | v0.1 release | `dist` pipeline, installers, Homebrew tap, `install`, `self-update`, plugin |
 | M6 | Pilot | first real project adopts valetkey; its targets and fence checks become the acceptance test |
