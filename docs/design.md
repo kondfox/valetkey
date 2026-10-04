@@ -688,21 +688,38 @@ Every guard below was tested against real Postgres 15–18 in M0, including each
 - **Reads always end with `ROLLBACK`.** That discards writes a `postgres_fdw` remote view makes on
   the remote side, and suppresses `pg_notify`.
 
-**Protected targets: the broker refuses to connect when**
+**Every target: the broker refuses** a server with `max_prepared_transactions > 0`. M2 found
+that `PREPARE TRANSACTION` works inside a read-only transaction, and the prepared transaction,
+with its locks, outlives the connection.
+
+**Memory is bounded below the driver.** The connection guard caps every backend message at
+`max_bytes + 64 KiB`, so one huge value is refused from its 5-byte header before the driver
+buffers it. Rows are fetched through a portal limited to `max_rows + 1`. When the byte limit trips
+mid-result, the connection is dropped rather than drained. Every broker query is schema-qualified
+(`pg_catalog.…`), so a role-level `search_path` can't shadow the identity check or the catalog
+queries.
+
+**Protected targets: the broker refuses to connect when** any role in the **role closure**, meaning
+the login role and every role it can `SET ROLE` to (transitively; PG16+: only grants with the SET
+option), matches one of these. M2 verified that one statement can switch roles with
+`set_config('role', …)` and that SPI-running built-ins such as `query_to_xml` then use the new
+role, even through a NOINHERIT membership.
 - the role is a superuser
 - the role is a member of `pg_execute_server_program`, `pg_write_server_files` or
   `pg_read_server_files`. M0: `COPY … TO PROGRAM` and `COPY … TO '<file>'` run inside read-only
   transactions on PG 15–17.
-- the role can `EXECUTE` a dangerous function, which catalog query B finds:
+- a role in the closure can `EXECUTE` a dangerous function, which catalog query B finds:
   - any non-built-in function (OID ≥ 16384) in an untrusted language, `internal` included (a
     user-made `internal` wrapper read server files in M0)
   - any `SECURITY DEFINER` function, in any language, owned by a superuser or a member of the
     server-program/file/signal roles (a superuser-owned plpgsql function ran `COPY … TO PROGRAM`)
   - excluding members of allow-listed extensions (`pg_depend`, `deptype = 'e'`)
-- the role can `EXECUTE` a built-in whose grants changed since initdb (`proacl` ≠ `pg_init_privs`;
-  e.g. `pg_read_file`, `lo_export`). This is query C. Hardened databases may hit false positives,
-  so a target can override it, which `allow` labels high-risk.
-- an installed extension isn't on the allow-list (query A).
+- a role in the closure can `EXECUTE` a built-in whose grants changed since initdb (`proacl` ≠
+  `pg_init_privs`; e.g. `pg_read_file`, `lo_export`). This is query C. Hardened databases may hit
+  false positives, so a target can set `allow_grant_drift = true`, which `allow` labels
+  high-risk.
+- an installed extension isn't on the allow-list (query A). A target can add to it with
+  `allow_extensions`, which `allow` labels high-risk.
 - the server asks for a cleartext or MD5 password (the auth guard).
 
 The three catalog queries are recorded in the wiki

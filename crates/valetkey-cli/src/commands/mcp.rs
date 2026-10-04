@@ -33,7 +33,7 @@ pub(crate) fn run() -> anyhow::Result<ExitCode> {
 
 /// Logs to a file under the valetkey root, or to stderr if that fails. Never to stdout.
 fn init_logging(root: &ValetkeyRoot) {
-    let filter = EnvFilter::new("info");
+    let filter = EnvFilter::new(valetkey_mcp::LOG_FILTER);
     let dir = root.logs_dir();
     let file = ensure_private_dir(&dir).and_then(|()| {
         std::fs::OpenOptions::new()

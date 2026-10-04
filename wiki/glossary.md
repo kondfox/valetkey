@@ -51,6 +51,8 @@ Terms as valetkey uses them. Spec references point into `docs/design.md`.
   directory. §6.1
 - **Protected secret:** any secret the fence verifiably keeps from the agent.
   [[2026-10-04-secret-exposure-classification]]
+- **Role closure:** the login role plus every role it can `SET ROLE` to. Every Postgres check
+  covers all of them. [[2026-10-04-postgres-read-only-guards]]
 - **Sandbox runtime:** `@anthropic-ai/sandbox-runtime` (CLI `srt`), the open-source sandbox that
   Claude Code's Bash sandbox is built on; used for fence tests in CI. [[claude-code-sandbox]]
 - **Secret reference:** `<scheme>://…` in config; never the value itself.

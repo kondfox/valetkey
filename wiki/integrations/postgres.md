@@ -24,6 +24,22 @@ Driver: `tokio-postgres` 0.7.18. Design: `docs/design.md §6.9`; why: [[2026-10-
 | `DO $$ SET default_transaction_read_only=off; COMMIT; INSERT … $$` with only the startup GUC | 15–17 | `BEGIN READ ONLY` (both guards) |
 | `pg_cancel_backend`/`pg_terminate_backend` on **another session of the same role** | 16–17 | dedicated role per target |
 
+## Found in M2 (2026-10-05, postgres:15/16/17)
+
+- **Role switching inside one statement.** A role with only a NOINHERIT membership in a role that
+  can read table `t` ran `SELECT set_config('role', 'that_role', true), query_to_xml('select * from
+  t', …)` in a read-only transaction and got the rows. The outer statement's permission checks
+  happen before `set_config` runs; SPI-running built-ins check later, as the new role. Hence the
+  role closure in [[2026-10-04-postgres-read-only-guards]].
+- **`PREPARE TRANSACTION` works in a read-only transaction** when `max_prepared_transactions > 0`.
+  The prepared transaction, and an advisory transaction lock taken before it, survive the
+  disconnect.
+- `LOCK TABLE … ACCESS EXCLUSIVE` and `nextval` fail in read-only; covered by the regression
+  tests.
+
+Regression tests: `crates/valetkey-postgres/tests/read.rs` (every escape above and in the M0
+table).
+
 ## Blocked by read-only (verified)
 
 `COPY FROM` (program or file), `pg_read_file` without a grant, `lo_import`, `postgres_fdw INSERT`,
@@ -75,6 +91,17 @@ On PG16/17 with allow-list `{plpgsql, pgcrypto, pg_stat_statements}`, query B fl
 function (plpython3u, plperlu, C, `internal` wrapper, privileged plpgsql definer) and no built-in or
 pgcrypto function. Without pgcrypto on the list it flags pgcrypto's 36 C functions. Query C flagged
 `lo_export` and `pg_read_file` for the roles they'd been granted to, and nothing for others.
+
+## Driver details (M2, `crates/valetkey-postgres/src/`)
+
+- `guard.rs` wraps the socket. During authentication it allows only codes 0, 10, 11 and 12
+  (OK, SASL); everything else is refused before a password is sent. For the whole connection it
+  caps every message at `max_bytes + 64 KiB`, from the 5-byte header.
+- `read.rs`: `START TRANSACTION READ ONLY`, then the identity query (`pg_catalog.current_database()`,
+  `current_user`, `transaction_read_only`, `max_prepared_transactions`), then the checks, then
+  `prepare` (one statement) + `bind` + `query_portal_raw(max_rows + 1)`, then `ROLLBACK`.
+- `values.rs`: parameters as text format (`ToSql::encode_format` = Text); results decoded per
+  type, with int8 and numeric as strings and a capped hex fallback.
 
 ## Password auth (tokio-postgres 0.7.18)
 

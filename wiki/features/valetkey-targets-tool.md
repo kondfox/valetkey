@@ -21,6 +21,7 @@ Rules:
   content.
 - Exposure is recomputed per call. Protected targets are also refused when the valetkey root is
   accessible to other users.
-- In M1 every target is unavailable (no adapter tools yet).
+- Each target says whether it's `available` and with which `tools`; protected targets wait for
+  fence detection (M4) unless `require_fence = false`.
 
 Entry point: `crates/valetkey-mcp/src/lib.rs`, tests in `crates/valetkey-mcp/tests/targets.rs`.

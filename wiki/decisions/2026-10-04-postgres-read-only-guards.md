@@ -40,6 +40,13 @@ Every guard was tested against real Postgres 15–18 ([[postgres]]). Six changes
    `tokio-postgres` has no option for it, and `channel_binding = require` also refuses SCRAM
    without TLS.
 
+### M2 update (2026-10-05)
+- Checks cover the **role closure**: one statement can switch roles (`set_config('role', …)`), and
+  built-ins like `query_to_xml` then run as the new role.
+- Servers with `max_prepared_transactions > 0` are refused: a prepared transaction outlives the
+  connection.
+- A message-size cap in the connection guard and a row-limited portal bound memory.
+
 ## Why
 - Each layer stops a different class: the protocol stops statement smuggling, the transaction
   stops plain writes, the role checks stop server-side escapes.
