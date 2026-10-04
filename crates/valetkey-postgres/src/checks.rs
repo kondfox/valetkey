@@ -2,11 +2,11 @@
 //! statement (§6.9). Every name is schema-qualified, so a role-level `search_path` can't shadow
 //! the functions and catalogs used here.
 //!
-//! **Role closure (M2 review, blocker B1).** A single statement can switch roles with
+//! **Role closure (M2 reviews).** A single statement can switch roles with
 //! `set_config('role', …)`, and SPI-running built-ins such as `query_to_xml` then run with the new
-//! role: verified on PG16 and PG17, including through a NOINHERIT membership. So every check
-//! covers each role the login role can `SET ROLE` to (transitively; on PG16+ only grants with the
-//! SET option), not just the login role.
+//! role: verified on PG16 and PG17, including through a NOINHERIT membership. And a membership
+//! with INHERIT but without SET still lends its privileges. So every check covers the login role
+//! and every role it's a member of, transitively, whatever the grant options.
 
 use std::collections::BTreeSet;
 
@@ -163,23 +163,18 @@ pub async fn run(
     Ok(())
 }
 
-/// Every role the session user can `SET ROLE` to, including itself: transitive membership; on
-/// PG16+ only through grants with the SET option.
+/// The session user and **every** role it's a member of, transitively, whatever the grants'
+/// INHERIT and SET options. A role reachable only by SET can be switched to inside one statement;
+/// a role reachable only by INHERIT lends its privileges directly (the predefined server-file and
+/// program roles work that way: `COPY` checks inherited privileges). Both count (M2b review B1).
 async fn role_closure(txn: &Transaction<'_>) -> Result<Vec<(u32, String)>, tokio_postgres::Error> {
-    let version: i32 = txn
-        .query_one("SELECT pg_catalog.current_setting('server_version_num')::int", &[])
-        .await?
-        .get(0);
-    let set_option = if version >= 160_000 { "AND m.set_option" } else { "" };
-    let sql = format!(
-        "WITH RECURSIVE closure(oid) AS (
+    const SQL: &str = "WITH RECURSIVE closure(oid) AS (
              SELECT r.oid FROM pg_catalog.pg_roles r WHERE r.rolname = session_user
              UNION
-             SELECT m.roleid FROM pg_catalog.pg_auth_members m JOIN closure c ON m.member = c.oid WHERE true {set_option}
+             SELECT m.roleid FROM pg_catalog.pg_auth_members m JOIN closure c ON m.member = c.oid
          )
-         SELECT r.oid, r.rolname::text FROM closure c JOIN pg_catalog.pg_roles r ON r.oid = c.oid ORDER BY 2"
-    );
-    let rows = txn.query(&sql, &[]).await?;
+         SELECT r.oid, r.rolname::text FROM closure c JOIN pg_catalog.pg_roles r ON r.oid = c.oid ORDER BY 2";
+    let rows = txn.query(SQL, &[]).await?;
     Ok(rows
         .iter()
         .map(|r| (r.get::<_, u32>(0), r.get::<_, String>(1)))

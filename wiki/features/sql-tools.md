@@ -18,9 +18,17 @@ path ([[architecture]]).
   arrays nested.
 - `fence` appears when a protected target is used without one (`require_fence = false`).
 
+**Checks** (role closure, extensions, dangerous functions, re-granted built-ins) run for protected
+targets and for every socket target. Exposed TCP targets skip them
+([[exposed-tcp-targets-skip-checks]]).
+
+**What a read can see** is the union of what every role in the login role's closure can read: one
+statement can switch roles. Give each target a dedicated role with no memberships beyond what it
+needs.
+
 **Per-target limits** (settings, low risk in `allow`):
 - `max_rows` (1000, at most 10000)
-- `max_bytes` (1 MiB, at most 16 MiB)
+- `max_bytes` (1 MiB, at most 16 MiB; approximate: counts the values' JSON, not names or framing)
 - `statement_timeout_ms` (30 s, at most 300 s)
 
 The whole call also has a wall-clock limit.

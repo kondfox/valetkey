@@ -373,7 +373,11 @@ impl Broker {
             database: &u.spec.database,
             user: &u.spec.user,
             password: &password,
-            protected: u.protected,
+            // The checks run for protected targets and for every socket target: the agent can't
+            // reach a socket itself, so the read path is its only route (M2b review N1). Exposed
+            // TCP targets skip them: tech debt until M4 knows which targets the agent can reach.
+            run_checks: u.protected || u.spec.socket.is_some(),
+            allow_prepared_transactions: u.spec.allow_prepared_transactions,
             extra_extensions: &u.spec.allow_extensions,
             allow_grant_drift: u.spec.allow_grant_drift,
             sql,

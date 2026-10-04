@@ -112,7 +112,8 @@ async fn run_with(
         database: "postgres",
         user: "vk_reader",
         password: &password,
-        protected,
+        run_checks: protected,
+        allow_prepared_transactions: false,
         extra_extensions: extra,
         allow_grant_drift: drift,
         sql,
@@ -370,7 +371,8 @@ async fn only_scram_authentication_is_accepted() {
             database: "postgres",
             user: "vk_reader",
             password: &password,
-            protected: false,
+            run_checks: false,
+            allow_prepared_transactions: false,
             extra_extensions: &[],
             allow_grant_drift: false,
             sql: "SELECT 1",
@@ -463,8 +465,117 @@ async fn mapped_port<I: testcontainers::Image>(c: &ContainerAsync<I>) -> u16 {
                 let _ = e;
                 tokio::time::sleep(std::time::Duration::from_millis(250)).await;
             }
-            Err(e) => panic!("no mapped port: {e}"),
+            Err(e) => {
+                let id = c.id();
+                let state = std::process::Command::new("docker")
+                    .args(["inspect", "-f", "{{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} restarts={{.RestartCount}}", id])
+                    .output()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+                    .unwrap_or_default();
+                let logs = std::process::Command::new("docker")
+                    .args(["logs", "--tail", "15", id])
+                    .output()
+                    .map(|o| {
+                        format!(
+                            "{}{}",
+                            String::from_utf8_lossy(&o.stdout),
+                            String::from_utf8_lossy(&o.stderr)
+                        )
+                    })
+                    .unwrap_or_default();
+                panic!("no mapped port: {e}\nstate: {state}\nlogs:\n{logs}")
+            }
         }
     }
     unreachable!()
+}
+
+/// M2b review B1: a grant WITH INHERIT TRUE, SET FALSE still lends the role's privileges
+/// (COPY checks inherited privileges), so it counts too.
+#[tokio::test]
+async fn inherit_only_grants_count_too() {
+    if !docker_available() {
+        return;
+    }
+    for tag in ["16", "17"] {
+        let pg = start(tag, &[], None).await;
+        admin(
+            &pg,
+            "GRANT pg_write_server_files TO vk_reader WITH INHERIT TRUE, SET FALSE;",
+        )
+        .await;
+        let e = protected(&pg).await.unwrap_err();
+        assert!(
+            matches!(e, ReadError::Refused(ref m) if m.contains("pg_write_server_files")),
+            "PG{tag}: {e:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn statements_that_try_to_leave_the_transaction_fail_cleanly() {
+    if !docker_available() {
+        return;
+    }
+    let pg = start("17", &[], None).await;
+    admin(
+        &pg,
+        "CREATE PROCEDURE sneaky() LANGUAGE plpgsql AS $$ BEGIN COMMIT; SET default_transaction_read_only = off; DELETE FROM items; END $$;
+         GRANT EXECUTE ON PROCEDURE sneaky() TO vk_reader;",
+    )
+    .await;
+    let e = q(&pg, "CALL sneaky()").await.unwrap_err();
+    assert!(
+        matches!(e, ReadError::Server(ref m) if m.contains("invalid transaction termination")),
+        "{e:?}"
+    );
+
+    // COPY … TO STDOUT through a portal: a clean error, not a hang.
+    let started = std::time::Instant::now();
+    let e = q(&pg, "COPY items TO STDOUT").await.unwrap_err();
+    assert!(started.elapsed() < Duration::from_secs(10), "{e:?}");
+
+    // COMMIT as the statement commits a read-only transaction: harmless, and the call still works.
+    q(&pg, "COMMIT").await.unwrap();
+    q(&pg, "LISTEN somewhere").await.unwrap();
+    assert_eq!(count_items(&pg).await, 2);
+}
+
+#[tokio::test]
+async fn names_from_the_database_are_shown_sanitized() {
+    if !docker_available() {
+        return;
+    }
+    let pg = start("17", &[], None).await;
+    admin(&pg, "CREATE FUNCTION \"run\u{202e}gnp.exe\"() RETURNS int LANGUAGE plpgsql SECURITY DEFINER AS $$ BEGIN RETURN 1; END $$;").await;
+    let e = protected(&pg).await.unwrap_err();
+    let text = e.to_string();
+    assert!(!text.contains('\u{202e}') && text.contains("\\u{202e}"), "{text}");
+}
+
+#[tokio::test]
+async fn prepared_transactions_can_be_allowed_for_exposed_targets() {
+    if !docker_available() {
+        return;
+    }
+    let pg = start("17", &["-c", "max_prepared_transactions=5"], None).await;
+    let password = SecretString::from(READER_PW);
+    let r = read(ReadRequest {
+        endpoint: Endpoint::Tcp {
+            host: "127.0.0.1".into(),
+            port: pg.port,
+        },
+        database: "postgres",
+        user: "vk_reader",
+        password: &password,
+        run_checks: false,
+        allow_prepared_transactions: true,
+        extra_extensions: &[],
+        allow_grant_drift: false,
+        sql: "SELECT 1",
+        params: &[],
+        limits: Limits::default(),
+    })
+    .await;
+    assert!(r.is_ok(), "{r:?}");
 }

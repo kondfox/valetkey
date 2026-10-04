@@ -5,7 +5,9 @@
 //!   (10, 11, 12). Cleartext (3), MD5 (5), Kerberos, GSS and SSPI requests are refused before
 //!   `tokio-postgres` could answer them, so no password is sent (M0: the driver has no option
 //!   for this). The only other messages allowed then are `ErrorResponse` and
-//!   `NegotiateProtocolVersion`.
+//!   `NegotiateProtocolVersion`. Anything else, including a `NoticeResponse` or
+//!   `ParameterStatus` that some poolers or proxies send early, refuses the connection
+//!   (fail closed).
 //! - **For the whole connection** it caps every message's length. `tokio-postgres` buffers a
 //!   whole message (e.g. a `DataRow`) before decoding it, so without the cap one huge value would
 //!   be allocated in full whatever the row and byte limits say (M2 review, blocker B2). The guard
@@ -25,7 +27,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 pub enum GuardViolation {
     #[error("the server asked for authentication method {0}, which valetkey refuses (only SCRAM is allowed)")]
     AuthMethod(i32),
-    #[error("the server sent an unexpected message `{}` during authentication", char::from(*.0))]
+    #[error("the server sent an unexpected message `{}` during authentication; connection refused (only errors and protocol negotiation may come before authentication succeeds)", char::from(*.0))]
     UnexpectedDuringAuth(u8),
     #[error("the server sent a {len}-byte message; the limit is {max}")]
     MessageTooLarge { len: u32, max: u32 },
@@ -271,6 +273,17 @@ mod tests {
         let mut p = Parser::new(64 * 1024);
         assert!(feed_all(&mut p, &msg(b'v', &[0, 0, 0, 0, 0, 0, 0, 0]), 1).is_ok());
         assert!(feed_all(&mut p, &msg(b'E', b"SFATAL\0"), 2).is_ok());
+    }
+
+    #[test]
+    fn notices_and_parameter_status_before_authentication_are_refused() {
+        for t in *b"NS" {
+            let mut p = Parser::new(64 * 1024);
+            assert_eq!(
+                feed_all(&mut p, &msg(t, b"x\0"), 1),
+                Err(GuardViolation::UnexpectedDuringAuth(t))
+            );
+        }
     }
 
     #[test]

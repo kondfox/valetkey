@@ -17,7 +17,7 @@ pub const SOCKET_FILE: &str = ".s.PGSQL.5432";
 const DEFAULT_PORT: u16 = 5432;
 
 /// Version of this kind's normalized form; see `NormalizedTarget::kind_version`.
-const KIND_VERSION: u32 = 2;
+const KIND_VERSION: u32 = 3;
 
 /// A `kind = "postgres"` target in `valetkey.toml`.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -49,6 +49,11 @@ pub struct PostgresTarget {
     /// deliberately hardened databases. A HIGH change in `allow`.
     #[serde(default)]
     pub allow_grant_drift: bool,
+    /// Allow a server with `max_prepared_transactions > 0` (e.g. a local DB with two-phase commit
+    /// on). A read-only statement could then leave a prepared transaction and its locks behind, so
+    /// only exposed targets may set it. A HIGH change in `allow`.
+    #[serde(default)]
+    pub allow_prepared_transactions: bool,
     /// Most rows returned per call (default 1000, at most 10000).
     pub max_rows: Option<u32>,
     /// Most result bytes per call (default 1 MiB, at most 16 MiB).
@@ -82,6 +87,8 @@ pub struct TargetSpec {
     pub user: String,
     pub allow_extensions: Vec<String>,
     pub allow_grant_drift: bool,
+    #[serde(default)]
+    pub allow_prepared_transactions: bool,
     pub max_rows: u32,
     pub max_bytes: u32,
     pub statement_timeout_ms: u32,
@@ -193,6 +200,11 @@ impl TargetKind for PostgresKind {
                 json!(null)
             }
         };
+        if t.allow_prepared_transactions && exposure == Exposure::Protected {
+            problems.push(problem(
+                "allow_prepared_transactions is only for exposed targets: a protected target never uses a server that allows prepared transactions".into(),
+            ));
+        }
         if t.tls.is_some() || t.sslmode.is_some() {
             problems.push(problem(
                 "TLS settings aren't supported yet (verified TLS arrives in M3); a protected target uses `socket`, and this target won't fall back to plain TCP".into(),
@@ -238,6 +250,10 @@ impl TargetKind for PostgresKind {
             extensions.dedup();
             c.insert("allow_extensions".into(), json!(extensions));
             c.insert("allow_grant_drift".into(), json!(t.allow_grant_drift));
+            c.insert(
+                "allow_prepared_transactions".into(),
+                json!(t.allow_prepared_transactions),
+            );
         }
         for (field, value) in [("database", &t.database), ("user", &t.user)] {
             if value.is_empty() || value.chars().any(char::is_control) {
@@ -336,8 +352,15 @@ mod tests {
         let c = parse(LOCAL).unwrap();
         assert_eq!(
             serde_json::to_string(&c.targets["local-app"]).unwrap(),
-            r#"{"kind":"postgres","kind_version":2,"secret":"env-file://.env#POSTGRES_PASSWORD","exposure_at_approval":"exposed","writable":true,"connection":{"allow_extensions":[],"allow_grant_drift":false,"database":"app","host":"localhost","port":5432,"user":"app"},"settings":{"description":null,"max_bytes":1048576,"max_rows":1000,"statement_timeout_ms":30000}}"#
+            r#"{"kind":"postgres","kind_version":3,"secret":"env-file://.env#POSTGRES_PASSWORD","exposure_at_approval":"exposed","writable":true,"connection":{"allow_extensions":[],"allow_grant_drift":false,"allow_prepared_transactions":false,"database":"app","host":"localhost","port":5432,"user":"app"},"settings":{"description":null,"max_bytes":1048576,"max_rows":1000,"statement_timeout_ms":30000}}"#
         );
+    }
+
+    #[test]
+    fn prepared_transactions_are_an_exposed_only_opt_in() {
+        assert!(parse(&format!("{LOCAL}allow_prepared_transactions = true\n")).is_ok());
+        let m = messages(&format!("{STAGING}allow_prepared_transactions = true\n"));
+        assert!(m.iter().any(|m| m.contains("only for exposed targets")), "{m:?}");
     }
 
     #[test]

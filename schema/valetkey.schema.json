@@ -55,6 +55,11 @@
               "type": "boolean",
               "default": false
             },
+            "allow_prepared_transactions": {
+              "description": "Allow a server with `max_prepared_transactions > 0` (e.g. a local DB with two-phase commit\non). A read-only statement could then leave a prepared transaction and its locks behind, so\nonly exposed targets may set it. A HIGH change in `allow`.",
+              "type": "boolean",
+              "default": false
+            },
             "database": {
               "description": "The database name. The broker verifies it with `current_database()` on every connect.",
               "type": "string"

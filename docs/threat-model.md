@@ -59,7 +59,7 @@ valetkey release, the agent client itself being compromised.
 | A9 | Squat a local port and play a fake server to capture a password | Protected secrets travel only over write-denied unix sockets or verified TLS, **whatever the host**. Plain TCP only for exposed secrets. Cleartext/MD5 auth refused (M0 item 2). |
 | A10 | Write through a "read": `COMMIT; DELETE …`; `SET TRANSACTION READ WRITE` as the first statement; `DO $$ … COMMIT … $$` | Extended protocol only (single statement); `BEGIN READ ONLY` **and** `default_transaction_read_only=on`; the broker's own identity query runs first inside the transaction, which locks it read-only; reads always `ROLLBACK`. Each escape reproduced and blocked against real Postgres in M0. |
 | A11 | Escape read-only through extensions (`dblink`, `postgres_fdw` remote views, `pg_background`, `http`, …), `COPY … TO PROGRAM`/`TO file`, untrusted-language or privileged `SECURITY DEFINER` functions (including user-made `internal` wrappers), re-granted built-ins (`pg_read_file`, `lo_export`), or a superuser role | Protected targets refused unless: every extension is allow-listed; the role holds none of the server-file/program roles; catalog queries B and C find no executable dangerous function. All confirmed as real escapes in M0. |
-| A11b | Switch roles inside one statement (`set_config('role', …)` plus `query_to_xml`), through a membership that NOINHERIT doesn't stop (verified in M2) | Every check covers the **role closure**: each role the login role can `SET ROLE` to |
+| A11b | Switch roles inside one statement (`set_config('role', …)` plus `query_to_xml`), through a membership that NOINHERIT doesn't stop (verified in M2) | Every check covers the **role closure**: the login role and every role it's a member of, transitively, whatever the INHERIT and SET options (an INHERIT-only grant still lends privileges) |
 | A11c | Leave a prepared transaction behind (`PREPARE TRANSACTION` works in a read-only transaction; verified in M2) | Servers with `max_prepared_transactions > 0` are refused |
 | A12 | Write without consent (`allow_write: true` is set by the agent) | `writable` target flag plus out-of-band human approval (`valetkey approve` in a terminal). Skipped only for targets the agent could reach without valetkey anyway. |
 | A12b | Mislead the human in the approval prompt (a long statement whose tail is hidden, a persuasive "reason") | The broker builds the whole prompt: verified identity, full statement or a marked truncation plus hash, no agent free text. Timeout means deny. |
@@ -119,6 +119,6 @@ valetkey release, the agent client itself being compromised.
 - **Fence correctness depends on the agent client.** Without managed settings, a mistake in
   project or user settings can weaken the fence. Unfenced mode catches the common cases, not all
   of them.
-- **Data exposure.** Query results reach the agent by design. Limit what each target's role can
+- **Data exposure.** Query results reach the agent by design, and a read can see everything **any role in the login role's closure** can read: one statement can switch roles. Limit what each target's role can
   see.
 - **Native Windows** has no sandbox. Deployed targets require WSL2.

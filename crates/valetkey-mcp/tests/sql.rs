@@ -335,8 +335,71 @@ async fn mapped_port<I: testcontainers::Image>(c: &ContainerAsync<I>) -> u16 {
                 let _ = e;
                 tokio::time::sleep(std::time::Duration::from_millis(250)).await;
             }
-            Err(e) => panic!("no mapped port: {e}"),
+            Err(e) => {
+                let id = c.id();
+                let state = std::process::Command::new("docker")
+                    .args(["inspect", "-f", "{{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} restarts={{.RestartCount}}", id])
+                    .output()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+                    .unwrap_or_default();
+                let logs = std::process::Command::new("docker")
+                    .args(["logs", "--tail", "15", id])
+                    .output()
+                    .map(|o| {
+                        format!(
+                            "{}{}",
+                            String::from_utf8_lossy(&o.stdout),
+                            String::from_utf8_lossy(&o.stderr)
+                        )
+                    })
+                    .unwrap_or_default();
+                panic!("no mapped port: {e}\nstate: {state}\nlogs:\n{logs}")
+            }
         }
     }
     unreachable!()
+}
+
+/// An exposed secret behind a socket: the agent can only reach it through valetkey, so the
+/// role-closure checks still run (M2b review N1).
+#[cfg(unix)]
+#[tokio::test]
+async fn exposed_socket_targets_still_get_the_checks() {
+    if !docker_available() {
+        return;
+    }
+    let e = env().await;
+    socket_bridge(&e, "pg");
+    std::fs::write(e.project.join(".env"), "PGPASSWORD=reader-pw\n").unwrap();
+    let config = "[targets.dev-socket]\nkind = \"postgres\"\nsocket = \"pg\"\ndatabase = \"postgres\"\nuser = \"vk_reader\"\nsecret = \"env-file://.env#PGPASSWORD\"\n";
+    approve(&e, config);
+    let b = broker(&e);
+    let (err, r) = call(
+        &e,
+        &b,
+        "sql_query",
+        json!({ "target": "dev-socket", "sql": "SELECT 1" }),
+    )
+    .await;
+    assert!(!err, "a clean role passes: {r}");
+
+    let (admin, conn) = tokio_postgres::connect(
+        &format!("host=127.0.0.1 port={} user=postgres password=pw", e.port),
+        tokio_postgres::NoTls,
+    )
+    .await
+    .unwrap();
+    tokio::spawn(conn);
+    admin
+        .batch_execute("GRANT pg_read_server_files TO vk_reader")
+        .await
+        .unwrap();
+    let (err, r) = call(
+        &e,
+        &b,
+        "sql_query",
+        json!({ "target": "dev-socket", "sql": "SELECT 1" }),
+    )
+    .await;
+    assert!(err && r.as_str().unwrap().contains("pg_read_server_files"), "{r}");
 }

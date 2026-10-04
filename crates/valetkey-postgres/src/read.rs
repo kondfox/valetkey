@@ -26,6 +26,8 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_postgres::types::ToSql;
 use tokio_postgres::{Client, NoTls};
 
+use valetkey_core::sanitize::for_display;
+
 use crate::checks;
 use crate::guard::{GuardViolation, Guarded};
 use crate::values::{AnyValue, TextParam};
@@ -69,8 +71,12 @@ pub struct ReadRequest<'a> {
     pub database: &'a str,
     pub user: &'a str,
     pub password: &'a SecretString,
-    /// Whether the secret is protected; protected targets get the role and catalog checks.
-    pub protected: bool,
+    /// Run the role-closure and catalog checks: for protected targets, and for targets the agent
+    /// can only reach through valetkey (sockets).
+    pub run_checks: bool,
+    /// Whether this target may use a server that allows prepared transactions. Only exposed
+    /// targets can set it (validated at config load); a HIGH change in `allow`.
+    pub allow_prepared_transactions: bool,
     /// Extensions allowed beyond [`checks::DEFAULT_EXTENSIONS`].
     pub extra_extensions: &'a [String],
     /// Skip catalog query C (re-granted built-ins), for hardened databases. A HIGH change in `allow`.
@@ -291,17 +297,17 @@ async fn run(
 
     // M2 finding: `PREPARE TRANSACTION` works inside a read-only transaction, and the prepared
     // transaction (with its locks) outlives the connection.
-    if max_prepared > 0 {
+    if max_prepared > 0 && !req.allow_prepared_transactions {
         return Err(ReadError::Refused(format!(
-            "the server allows prepared transactions (max_prepared_transactions = {max_prepared}), which let a read-only statement leave a transaction and its locks behind; set it to 0"
+            "the server allows prepared transactions (max_prepared_transactions = {max_prepared}), which let a read-only statement leave a transaction and its locks behind; set it to 0, or (exposed targets only) set allow_prepared_transactions = true"
         )));
     }
 
-    if req.protected {
+    if req.run_checks {
         checks::run(&txn, req.extra_extensions, req.allow_grant_drift)
             .await
             .map_err(|e| match e {
-                checks::CheckError::Refused(why) => ReadError::Refused(why),
+                checks::CheckError::Refused(why) => ReadError::Refused(for_display(&why)),
                 checks::CheckError::Query(e) => err(e),
             })?;
     }
@@ -350,7 +356,8 @@ async fn run(
             .map(|i| row.try_get::<_, AnyValue>(i).map(|v| v.0))
             .collect::<Result<_, _>>()
             .map_err(err)?;
-        bytes += values.iter().map(|v| v.to_string().len()).sum::<usize>();
+        // Approximate: the JSON size of the values, counted without building the strings.
+        bytes += values.iter().map(json_len).sum::<usize>();
         if bytes > req.limits.max_bytes {
             truncated = true;
             // Don't drain the rest: drop the connection instead.
@@ -377,13 +384,31 @@ async fn run(
     })
 }
 
+/// The serialized JSON length of a value, counted by a writer that discards the bytes.
+fn json_len(v: &Value) -> usize {
+    struct Count(usize);
+    impl std::io::Write for Count {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0 += b.len();
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut c = Count(0);
+    let _ = serde_json::to_writer(&mut c, v);
+    c.0
+}
+
 fn query_error(e: tokio_postgres::Error, report: &OnceLock<GuardViolation>) -> ReadError {
     if let Some(v) = report.get() {
         return ReadError::Guard(v.clone());
     }
     match e.as_db_error() {
         // About the agent's own statement (or a guard query it provoked): fine to show.
-        Some(db) => ReadError::Server(format!("{} ({})", db.message(), db.code().code())),
+        // Object names and messages come from the database and may hold control or bidi characters.
+        Some(db) => ReadError::Server(for_display(&format!("{} ({})", db.message(), db.code().code()))),
         None => ReadError::Other(e.to_string()),
     }
 }

@@ -688,7 +688,8 @@ Every guard below was tested against real Postgres 15–18 in M0, including each
 - **Reads always end with `ROLLBACK`.** That discards writes a `postgres_fdw` remote view makes on
   the remote side, and suppresses `pg_notify`.
 
-**Every target: the broker refuses** a server with `max_prepared_transactions > 0`. M2 found
+**Every target: the broker refuses** a server with `max_prepared_transactions > 0`, unless an
+exposed target sets `allow_prepared_transactions` (a HIGH change in `allow`). M2 found
 that `PREPARE TRANSACTION` works inside a read-only transaction, and the prepared transaction,
 with its locks, outlives the connection.
 
@@ -699,9 +700,11 @@ mid-result, the connection is dropped rather than drained. Every broker query is
 (`pg_catalog.…`), so a role-level `search_path` can't shadow the identity check or the catalog
 queries.
 
-**Protected targets: the broker refuses to connect when** any role in the **role closure**, meaning
-the login role and every role it can `SET ROLE` to (transitively; PG16+: only grants with the SET
-option), matches one of these. M2 verified that one statement can switch roles with
+**Protected targets, and every target behind a socket** (the agent can only reach those through
+valetkey), get the checks below. Exposed TCP targets skip them until M4 can tell whether the agent
+could reach a target without valetkey (tech debt). **The broker refuses to connect when** any role
+in the **role closure**, meaning the login role and every role it's a member of, transitively,
+whatever the grants' INHERIT and SET options, matches one of these. M2 verified that one statement can switch roles with
 `set_config('role', …)` and that SPI-running built-ins such as `query_to_xml` then use the new
 role, even through a NOINHERIT membership.
 - the role is a superuser
