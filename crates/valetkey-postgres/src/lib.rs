@@ -64,7 +64,7 @@ impl TargetKind for PostgresKind {
             (Some(host), None) => {
                 if !is_host(host) {
                     problems.push(problem(format!(
-                        "invalid host `{}`: use a hostname or an IP address (ASCII letters, digits, `.`, `-`, `:`, `[`, `]`)",
+                        "invalid host `{}`: use a hostname or an IP address (put the port in `port`)",
                         host.escape_debug()
                     )));
                 }
@@ -132,12 +132,22 @@ impl TargetKind for PostgresKind {
     }
 }
 
-/// A hostname, IPv4 or bracketed/bare IPv6 address. ASCII only, so a look-alike host can't
-/// disguise itself in `allow`.
+/// A DNS hostname (which covers IPv4), or an IPv6 address, bare or in brackets. ASCII only, so a
+/// look-alike host can't disguise itself in `allow`.
 fn is_host(s: &str) -> bool {
+    if let Some(inner) = s.strip_prefix('[').and_then(|r| r.strip_suffix(']')) {
+        return inner.parse::<std::net::Ipv6Addr>().is_ok();
+    }
+    if s.parse::<std::net::Ipv6Addr>().is_ok() {
+        return true;
+    }
     (1..=253).contains(&s.len())
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '[' | ']'))
+        && s.split('.').all(|label| {
+            (1..=63).contains(&label.len())
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        })
 }
 
 fn is_alias(s: &str) -> bool {
@@ -252,7 +262,20 @@ mod tests {
         }
         // TOML literal strings ('…') keep these characters as they are, so the host check is
         // what has to reject them.
-        for bad in ["", "db host", "lo\u{202e}calhost", "d\u{0430}tabase", "h/x", "a\\b"] {
+        for bad in [
+            "",
+            "db host",
+            "lo\u{202e}calhost",
+            "d\u{0430}tabase",
+            "h/x",
+            "a\\b",
+            "-",
+            ":::",
+            "db:5432",
+            "a]b",
+            "[db]",
+            "a..b",
+        ] {
             let text = LOCAL.replace("\"localhost\"", &format!("'{bad}'"));
             let problems = parse(&text).unwrap_err();
             assert!(

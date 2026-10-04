@@ -358,7 +358,10 @@ async fn unusable_roots_fail_closed() {
         let r = call_with(&f, Some(&f.project), roots).await;
         assert_eq!(r["project"]["dir_verified"], false, "{what}: {r}");
         assert!(
-            r["targets"][1]["reason"].as_str().unwrap().starts_with("refused"),
+            r["targets"][1]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("couldn't be verified against the client's MCP roots"),
             "{what}: {r}"
         );
     }
