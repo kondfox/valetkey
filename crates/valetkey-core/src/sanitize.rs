@@ -23,15 +23,18 @@ pub fn has_non_ascii(text: &str) -> bool {
     !text.is_ascii()
 }
 
+/// Control (Cc), format (Cf), line/paragraph separators (Zl, Zp), plus invisible characters that
+/// aren't format characters: variation selectors, the combining grapheme joiner and Hangul fillers.
 fn needs_escape(c: char) -> bool {
     c.is_control()
         || matches!(c,
-            '\u{200b}'..='\u{200f}'   // zero-width space/joiners, LRM, RLM
-            | '\u{202a}'..='\u{202e}' // bidi embeddings and overrides
-            | '\u{2060}'..='\u{2064}' // word joiner, invisible operators
-            | '\u{2066}'..='\u{2069}' // bidi isolates
-            | '\u{feff}'              // zero-width no-break space / BOM
-            | '\u{00ad}'              // soft hyphen
+            '\u{00ad}' | '\u{034f}' | '\u{061c}' | '\u{070f}' | '\u{08e2}'
+            | '\u{0600}'..='\u{0605}' | '\u{06dd}' | '\u{0890}'..='\u{0891}'
+            | '\u{115f}' | '\u{1160}' | '\u{17b4}' | '\u{17b5}' | '\u{180b}'..='\u{180f}'
+            | '\u{200b}'..='\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2060}'..='\u{206f}'
+            | '\u{3164}' | '\u{fe00}'..='\u{fe0f}' | '\u{feff}' | '\u{ffa0}' | '\u{fff9}'..='\u{fffb}'
+            | '\u{110bd}' | '\u{110cd}' | '\u{13430}'..='\u{1343f}' | '\u{1bca0}'..='\u{1bca3}'
+            | '\u{1d173}'..='\u{1d17a}' | '\u{e0000}'..='\u{e0fff}'
         )
 }
 
@@ -46,6 +49,10 @@ mod tests {
         assert_eq!(for_display("x\ny"), "x\\u{000a}y");
         assert_eq!(for_display("admin\u{202e}txt.exe"), "admin\\u{202e}txt.exe");
         assert_eq!(for_display("pro\u{200b}d"), "pro\\u{200b}d");
+        assert_eq!(for_display("a\u{2028}b"), "a\\u{2028}b");
+        assert_eq!(for_display("tag\u{e0041}"), "tag\\u{e0041}");
+        assert_eq!(for_display("x\u{fe0f}"), "x\\u{fe0f}");
+        assert_eq!(for_display("h\u{3164}"), "h\\u{3164}");
     }
 
     #[test]

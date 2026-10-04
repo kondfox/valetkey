@@ -92,8 +92,13 @@ pub trait TargetKind: Send + Sync {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NormalizedTarget {
     pub kind: String,
+    /// Version of the kind's normalized form. A kind bumps it when its canonical output changes
+    /// shape, so an upgrade-caused re-approval can be told apart from an edited file.
+    pub kind_version: u32,
     pub secret: Option<SecretRef>,
-    pub exposure: Option<Exposure>,
+    /// The exposure on the platform and fence **at approval time**, for display only. Policy must
+    /// recompute exposure on every call (§6.0: it depends on the current fence state).
+    pub exposure_at_approval: Option<Exposure>,
     pub writable: bool,
     /// Where and as whom the broker connects: host, socket, database, user, TLS. Any change is
     /// high risk (§6.1).
@@ -301,7 +306,8 @@ pub(crate) mod tests {
             }
             Ok(NormalizedTarget {
                 kind: "fake".into(),
-                exposure: secret.as_ref().map(|s| s.exposure(cx.platform)),
+                kind_version: 1,
+                exposure_at_approval: secret.as_ref().map(|s| s.exposure(cx.platform)),
                 secret,
                 writable,
                 connection: json!({ "host": host }),

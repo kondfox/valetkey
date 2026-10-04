@@ -211,3 +211,59 @@ async fn no_project_dir_at_all() {
     let r = call(&f, None, None).await;
     assert_eq!(r["project"]["approval"], "no_project");
 }
+
+/// B1: nothing from the config file's content reaches the agent, even when it doesn't parse.
+#[tokio::test]
+async fn parse_errors_never_echo_file_content() {
+    let f = fixture();
+    approve(&f);
+    std::fs::write(
+        f.project.join("valetkey.toml"),
+        "[targets.x]\nhost = \"SECRET-CANARY-91bc\n",
+    )
+    .unwrap();
+    let r = call(&f, Some(&f.project), Some(vec![f.project.clone()])).await;
+    assert_eq!(r["project"]["approval"], "stale");
+    assert!(!r.to_string().contains("CANARY"), "{r}");
+}
+
+/// B1: a hard-linked config (possibly pointing at a fenced file) isn't read.
+#[cfg(unix)]
+#[tokio::test]
+async fn hard_linked_config_is_not_read() {
+    let f = fixture();
+    approve(&f);
+    let elsewhere = f.project.parent().unwrap().join("fenced-file");
+    std::fs::rename(f.project.join("valetkey.toml"), &elsewhere).unwrap();
+    std::fs::hard_link(&elsewhere, f.project.join("valetkey.toml")).unwrap();
+    let r = call(&f, Some(&f.project), Some(vec![f.project.clone()])).await;
+    assert_eq!(r["project"]["approval"], "stale", "{r}");
+    assert_eq!(r["targets"].as_array().unwrap().len(), 0);
+}
+
+/// B1: a symlinked config isn't followed, and its target's content isn't echoed.
+#[cfg(unix)]
+#[tokio::test]
+async fn symlinked_config_is_not_followed() {
+    let f = fixture();
+    let secret = f.project.parent().unwrap().join("secret.txt");
+    std::fs::write(&secret, "TOKEN-CANARY-55aa").unwrap();
+    std::fs::remove_file(f.project.join("valetkey.toml")).unwrap();
+    std::os::unix::fs::symlink(&secret, f.project.join("valetkey.toml")).unwrap();
+    let r = call(&f, Some(&f.project), Some(vec![f.project.clone()])).await;
+    assert_eq!(r["project"]["approval"], "no_project");
+    assert!(!r.to_string().contains("CANARY"), "{r}");
+}
+
+/// N2: a root that others can access doesn't serve protected targets.
+#[cfg(unix)]
+#[tokio::test]
+async fn loose_root_permissions_refuse_protected_targets() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = fixture();
+    approve(&f);
+    std::fs::set_permissions(f.root.dir(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let r = call(&f, Some(&f.project), Some(vec![f.project.clone()])).await;
+    let staging = &r["targets"][1];
+    assert!(staging["reason"].as_str().unwrap().contains("loose permissions"), "{r}");
+}

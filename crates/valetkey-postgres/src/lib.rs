@@ -11,6 +11,9 @@ pub const SOCKET_FILE: &str = ".s.PGSQL.5432";
 
 const DEFAULT_PORT: u16 = 5432;
 
+/// Version of this kind's normalized form; see `NormalizedTarget::kind_version`.
+const KIND_VERSION: u32 = 1;
+
 /// A `kind = "postgres"` target in `valetkey.toml`.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -79,8 +82,12 @@ impl TargetKind for PostgresKind {
                         "invalid socket alias `{}`: use 1–40 characters of `a-z`, `0-9`, `-`",
                         alias.escape_debug()
                     )));
-                } else {
-                    let path = cx.root.socket_dir(alias).join(SOCKET_FILE);
+                }
+                // The resolved path is part of the canonical form (§6.2.1): if the root differs
+                // between `allow` and the broker, the hash differs instead of silently
+                // retargeting the socket.
+                let path = cx.root.socket_dir(alias).join(SOCKET_FILE);
+                if is_alias(alias) {
                     let len = path.as_os_str().len();
                     let max = cx.platform.max_socket_path_len();
                     if len > max {
@@ -90,7 +97,7 @@ impl TargetKind for PostgresKind {
                         )));
                     }
                 }
-                json!({ "socket": alias, "database": t.database, "user": t.user })
+                json!({ "socket": alias, "socket_path": path.display().to_string(), "database": t.database, "user": t.user })
             }
             (Some(_), Some(_)) => {
                 problems.push(problem("set either `host` or `socket`, not both".into()));
@@ -112,8 +119,9 @@ impl TargetKind for PostgresKind {
         }
         Ok(NormalizedTarget {
             kind: "postgres".into(),
+            kind_version: KIND_VERSION,
             secret: Some(t.secret),
-            exposure: Some(exposure),
+            exposure_at_approval: Some(exposure),
             writable: t.writable,
             connection,
             settings: json!({ "description": t.description }),
@@ -154,12 +162,16 @@ mod tests {
     fn accepts_the_documented_examples() {
         let c = parse(&format!("{LOCAL}{STAGING}")).unwrap();
         let local = &c.targets["local-app"];
-        assert_eq!(local.exposure, Some(Exposure::Exposed));
+        assert_eq!(local.exposure_at_approval, Some(Exposure::Exposed));
         assert_eq!(local.connection["port"], 5432);
         assert!(local.writable);
         let staging = &c.targets["staging-app"];
-        assert_eq!(staging.exposure, Some(Exposure::Protected));
+        assert_eq!(staging.exposure_at_approval, Some(Exposure::Protected));
         assert_eq!(staging.connection["socket"], "stage-core");
+        assert_eq!(
+            staging.connection["socket_path"],
+            "/Users/dev/.valetkey/sockets/stage-core/.s.PGSQL.5432"
+        );
         assert!(!staging.writable);
     }
 

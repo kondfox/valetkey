@@ -30,6 +30,11 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: test
         run: cargo test --workspace --locked --no-fail-fast
+      - name: release build ignores VALETKEY_DEV_ROOT
+        if: matrix.os != 'windows-latest'
+        run: |
+          cargo build --release --locked -p valetkey-cli
+          scripts/check_release_ignores_dev_root.sh target/release/valetkey
 
   msrv:
     name: MSRV (rust-version in Cargo.toml)

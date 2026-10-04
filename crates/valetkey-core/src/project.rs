@@ -6,7 +6,7 @@
 
 use std::fmt;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use crate::config::CONFIG_FILE_NAME;
 
@@ -53,6 +53,8 @@ pub enum ProjectError {
     SymlinkOnPath(PathBuf),
     #[error("the start directory must be an absolute path, got {0}")]
     NotAbsolute(PathBuf),
+    #[error("the start directory must not contain `.` or `..` components, got {0}")]
+    NotNormalized(PathBuf),
     #[error("can't inspect {path}: {source}")]
     Io { path: PathBuf, source: io::Error },
 }
@@ -64,6 +66,13 @@ pub enum ProjectError {
 pub fn discover(start: &Path) -> Result<Project, ProjectError> {
     if !start.is_absolute() {
         return Err(ProjectError::NotAbsolute(start.to_owned()));
+    }
+    // Parents are walked lexically, so `..` would make the walk check the wrong ancestors.
+    if start
+        .components()
+        .any(|c| matches!(c, Component::CurDir | Component::ParentDir))
+    {
+        return Err(ProjectError::NotNormalized(start.to_owned()));
     }
     let io_err = |path: &Path| {
         let path = path.to_owned();
@@ -123,6 +132,15 @@ mod tests {
         let p = discover(&base.join("repo/apps")).unwrap();
         assert_eq!(p.root, base.join("repo"));
         assert_eq!(p.config_path, base.join("repo/valetkey.toml"));
+    }
+
+    #[test]
+    fn non_normalized_start_is_rejected() {
+        let (_t, base) = tmp();
+        assert!(matches!(
+            discover(&base.join("a/..")),
+            Err(ProjectError::NotNormalized(_))
+        ));
     }
 
     #[test]

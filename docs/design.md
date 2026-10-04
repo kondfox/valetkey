@@ -281,7 +281,8 @@ their CLIs keep login state on each platform (likely the keychain on macOS: UNVE
 classify them per platform accordingly.
 
 In general, exposure = f(source, platform, verified fence capability), and the table lives in
-`valetkey-fence`.
+`valetkey-fence`. The snapshot records the exposure at approval time for display only; policy
+recomputes it on every call.
 
 Channel rules (§6.2), unfenced mode (§6.4) and the residual risks all key off exposure. They
 don't depend on the hostname: a `local://` password for a database on `localhost` is protected
@@ -388,6 +389,11 @@ instance.
 The broker runs outside the fence, so a path it resolves for the agent must never let it read a
 file the fence denies to the agent (the confused-deputy problem).
 
+- **Every file the broker reads from an agent-writable directory** (`valetkey.toml`, env-files) is
+  opened without following symlinks and without blocking on a FIFO, then checked **on the open
+  handle**: a regular file, owned by the current user, exactly one hard link, under a size cap.
+  Read and parse errors go to the broker's log only. The agent gets a fixed message, because
+  parser errors quote file lines (M1 review).
 - `env-file://` paths are relative to the canonical project root. Absolute paths, `..` and `~` are
   rejected. The file is opened without following symlinks, and the opened path must stay under the
   root.
