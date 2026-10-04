@@ -167,7 +167,6 @@ mod tests {
         assert_eq!(root.user_config_file(), Path::new("/r/config.toml"));
     }
 
-    #[cfg(unix)]
     #[test]
     fn os_home_dir_exists() {
         let home = os_home_dir().expect("home from the user database");

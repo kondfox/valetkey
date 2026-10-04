@@ -22,6 +22,7 @@ pub(crate) fn run() -> anyhow::Result<ExitCode> {
         platform: crate::platform(),
         env_project_dir,
         self_path: std::env::current_exe().unwrap_or_else(|_| PathBuf::from("valetkey")),
+        roots_timeout: valetkey_mcp::DEFAULT_ROOTS_TIMEOUT,
     };
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "broker starting");
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;

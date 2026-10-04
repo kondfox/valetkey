@@ -159,3 +159,41 @@ async fn mcp_server_serves_valetkey_targets() {
     let log = std::fs::read_to_string(e.root.join("logs/mcp.log")).unwrap();
     assert!(log.contains("broker starting"));
 }
+
+/// The root comes from the OS user database, never from `HOME` (or `USERPROFILE` on Windows):
+/// a settings `env` block can set those for the broker (M0).
+#[test]
+fn the_root_ignores_home() {
+    let e = env();
+    let fake_home = e.root.parent().unwrap().join("fake-home");
+    let o = Command::new(BIN)
+        .arg("doctor")
+        .current_dir(&e.project)
+        .env_remove("VALETKEY_DEV_ROOT")
+        .env("HOME", &fake_home)
+        .env("USERPROFILE", &fake_home)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let out = stdout(&o);
+    let real = valetkey_core::paths::os_home_dir().unwrap().join(".valetkey");
+    assert!(out.contains(&format!("valetkey root: {}", real.display())), "{out}");
+    assert!(
+        !out.contains(&format!("valetkey root: {}", fake_home.display())),
+        "{out}"
+    );
+}
+
+#[test]
+fn doctor_prints_the_proxy_command_for_a_missing_socket() {
+    let e = env();
+    let config = "[targets.staging-app]\nkind = \"postgres\"\nsocket = \"stage-core\"\ndatabase = \"app\"\nuser = \"vk_reader\"\nsecret = \"gcp-sm://acme-stage/DB_PASSWORD\"\n";
+    std::fs::write(e.project.join("valetkey.toml"), config).unwrap();
+    let out = stdout(&run(&e, &["doctor"]));
+    let socket_dir = ValetkeyRoot::at(&e.root).socket_dir("stage-core");
+    assert!(out.contains("no proxy socket yet"), "{out}");
+    assert!(
+        out.contains(&format!("unix-socket-path={}", socket_dir.display())),
+        "{out}"
+    );
+}
