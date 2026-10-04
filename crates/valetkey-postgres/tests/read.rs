@@ -14,11 +14,12 @@ use valetkey_postgres::read::{Endpoint, Limits, ReadError, ReadRequest, ReadResu
 
 const READER_PW: &str = "reader-pw";
 
+/// Docker that can run Linux containers (Windows runners have Docker, but only Windows containers).
 fn docker_available() -> bool {
     let ok = std::process::Command::new("docker")
-        .arg("info")
+        .args(["info", "--format", "{{.OSType}}"])
         .output()
-        .is_ok_and(|o| o.status.success());
+        .is_ok_and(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "linux");
     if !ok && std::env::var_os("CI").is_some() && cfg!(target_os = "linux") {
         panic!("Docker is required for the Postgres tests in CI on Linux");
     }
