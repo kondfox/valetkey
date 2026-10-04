@@ -12,5 +12,6 @@ the integration page skeleton in [[CLAUDE]].
 - [[rmcp]]: the Rust MCP SDK
 - [[rustls-platform-verifier]]: TLS trust sources and environment variables
 - [[cloud-sql-auth-proxy]]: unix-socket layout and path limits
+- [[gcloud]]: secret output format, Python lookup, credentials location
 - [[dist-and-homebrew]]: release tooling, the Homebrew tap, tap moves
 - [[github-actions]]: hosted runners and what the sandbox needs on them

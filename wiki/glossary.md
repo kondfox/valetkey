@@ -44,6 +44,8 @@ Terms as valetkey uses them. Spec references point into `docs/design.md`.
 - **M0:** the verification spike before any product code. §10, §11
 - **Pending request:** a write waiting for approval, rendered and hashed by the broker in
   `~/.valetkey/pending/<id>.json`. §6.10
+- **Process runner:** how the broker runs vendor CLIs: argv only, an environment built from
+  nothing, timeouts that kill the whole process group. [[secret-sources]]
 - **Project key:** blake3 of the canonical project root; it identifies a project's approvals. §6.1
 - **Project root:** the directory of the first `valetkey.toml` found walking up from the client's
   directory. §6.1
@@ -58,6 +60,8 @@ Terms as valetkey uses them. Spec references point into `docs/design.md`.
   protected targets are refused. §6.3
 - **Snapshot:** the approved canonical config stored in `~/.valetkey/projects/<project-key>/`. The broker serves this,
   never the working file. [[2026-10-04-human-approved-config-snapshot]]
+- **Single-flight cache:** concurrent fetches of the same secret share one fetch.
+  [[secret-sources]]
 - **Socket alias:** the short name a target uses for its proxy socket, mapping to
   `~/.valetkey/sockets/<alias>/.s.PGSQL.5432`. §6.2
 - **Sockets dir:** `~/.valetkey/sockets/`, where proxies put their unix sockets. The agent can

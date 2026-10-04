@@ -25,6 +25,11 @@ enum Command {
     Allow,
     /// Check this machine and project, and say what to fix.
     Doctor,
+    /// Record which vendor CLIs (gcloud) the broker may run. Must run in a normal terminal.
+    Setup,
+    /// Manage local:// secrets.
+    #[command(subcommand)]
+    Secret(commands::secret::SecretCommand),
     /// Run the MCP server on stdin/stdout. The agent client starts this; humans don't.
     Mcp,
     /// Print the JSON Schema for valetkey.toml.
@@ -46,6 +51,8 @@ fn main() -> ExitCode {
         Command::Init => commands::init::run(),
         Command::Allow => commands::allow::run(),
         Command::Doctor => commands::doctor::run(),
+        Command::Setup => commands::setup::run(),
+        Command::Secret(cmd) => commands::secret::run(cmd),
         Command::Mcp => commands::mcp::run(),
         Command::Schema => commands::schema::run(),
     };

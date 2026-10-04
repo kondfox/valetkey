@@ -197,3 +197,44 @@ fn doctor_prints_the_proxy_command_for_a_missing_socket() {
         "{out}"
     );
 }
+
+#[test]
+fn setup_and_secret_set_refuse_without_a_terminal() {
+    let e = env();
+    for args in [&["setup"][..], &["secret", "set", "app"][..]] {
+        let o = run(&e, args);
+        assert!(!o.status.success(), "{args:?}");
+        assert!(
+            stdout(&o).contains("needs an interactive terminal"),
+            "{args:?}: {}",
+            stdout(&o)
+        );
+    }
+    assert!(!e.root.join("secrets").exists());
+    assert!(!e.root.join("config.toml").exists());
+}
+
+#[test]
+fn secret_ls_and_rm_never_show_values() {
+    let e = env();
+    let root = ValetkeyRoot::at(&e.root);
+    valetkey_secrets::sources::LocalSource::store(&root, "app", &secrecy::SecretString::from("CANARY-value"), false)
+        .unwrap();
+    let ls = stdout(&run(&e, &["secret", "ls"]));
+    assert_eq!(ls.trim(), "local://app");
+    let rm = run(&e, &["secret", "rm", "app"]);
+    assert!(rm.status.success());
+    assert!(!stdout(&rm).contains("CANARY"));
+    assert!(stdout(&run(&e, &["secret", "ls"])).trim().is_empty());
+}
+
+#[test]
+fn doctor_says_which_secret_is_missing_and_how_to_set_it() {
+    let e = env();
+    let config = "require_fence = false\n[targets.staging-app]\nkind = \"postgres\"\nsocket = \"stage-core\"\ndatabase = \"app\"\nuser = \"vk_reader\"\nsecret = \"local://staging-app\"\n\n[targets.cloud-app]\nkind = \"postgres\"\nsocket = \"cloud-core\"\ndatabase = \"app\"\nuser = \"vk_reader\"\nsecret = \"gcp-sm://acme-stage/DB_PASSWORD\"\n";
+    std::fs::write(e.project.join("valetkey.toml"), config).unwrap();
+    let out = stdout(&run(&e, &["doctor"]));
+    assert!(out.contains("local://staging-app isn't set"), "{out}");
+    assert!(out.contains("secret set staging-app"), "{out}");
+    assert!(out.contains("gcloud isn't configured"), "{out}");
+}

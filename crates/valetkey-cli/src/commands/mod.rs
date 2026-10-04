@@ -3,3 +3,5 @@ pub(crate) mod doctor;
 pub(crate) mod init;
 pub(crate) mod mcp;
 pub(crate) mod schema;
+pub(crate) mod secret;
+pub(crate) mod setup;

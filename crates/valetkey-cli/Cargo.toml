@@ -16,16 +16,22 @@ path = "src/main.rs"
 valetkey-core.workspace = true
 valetkey-mcp.workspace = true
 valetkey-postgres.workspace = true
+valetkey-secrets.workspace = true
 anyhow.workspace = true
 clap.workspace = true
+rpassword.workspace = true
+secrecy.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+which.workspace = true
 
 [dev-dependencies]
+secrecy.workspace = true
+valetkey-secrets.workspace = true
 valetkey-postgres.workspace = true
 rmcp = { workspace = true, features = ["client", "transport-child-process"] }
 tempfile.workspace = true
