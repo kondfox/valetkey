@@ -53,6 +53,33 @@ pub fn check_strict(path: &Path, policy: &TrustPolicy) -> Result<(), String> {
     }
 }
 
+/// Checks gcloud's config directory **and the files gcloud reads in it** (`active_config`,
+/// `properties`, `configurations/config_*`): each must resolve inside the directory (a dotfiles
+/// manager may have made one a symlink into an agent-writable tree) and pass [`check_strict`].
+pub fn check_gcloud_config(dir: &Path, policy: &TrustPolicy) -> Result<(), String> {
+    let dir = std::fs::canonicalize(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    check_strict(&dir, policy)?;
+    let mut files = vec![dir.join("active_config"), dir.join("properties")];
+    if let Ok(entries) = std::fs::read_dir(dir.join("configurations")) {
+        files.extend(entries.filter_map(Result::ok).map(|e| e.path()));
+    }
+    for file in files {
+        if std::fs::symlink_metadata(&file).is_err() {
+            continue;
+        }
+        let real = std::fs::canonicalize(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+        if !real.starts_with(&dir) {
+            return Err(format!(
+                "{} resolves to {}, outside the config directory",
+                file.display(),
+                real.display()
+            ));
+        }
+        check_strict(&real, policy)?;
+    }
+    Ok(())
+}
+
 /// Whether `path` is a version-manager shim (pyenv, asdf, mise, rbenv, …). A shim picks the real
 /// program from files such as a project-local `.python-version`, which an agent can write.
 pub fn is_shim(path: &Path) -> bool {
@@ -193,6 +220,29 @@ mod tests {
                 .unwrap_err()
                 .contains("temp directory")
         );
+    }
+
+    #[test]
+    fn gcloud_config_files_must_stay_inside_the_dir() {
+        let (_t, base, policy) = setup();
+        let cfg = base.join("gcloud");
+        std::fs::create_dir_all(cfg.join("configurations")).unwrap();
+        std::fs::set_permissions(&cfg, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::write(cfg.join("active_config"), "default").unwrap();
+        std::fs::write(cfg.join("configurations/config_default"), "[core]\n").unwrap();
+        assert!(check_gcloud_config(&cfg, &policy).is_ok());
+
+        // A dotfiles-style symlink into the project (agent-writable).
+        std::fs::create_dir_all(base.join("repo")).unwrap();
+        std::fs::write(base.join("repo/config_default"), "[api_endpoint_overrides]\n").unwrap();
+        std::fs::remove_file(cfg.join("configurations/config_default")).unwrap();
+        std::os::unix::fs::symlink(
+            base.join("repo/config_default"),
+            cfg.join("configurations/config_default"),
+        )
+        .unwrap();
+        let err = check_gcloud_config(&cfg, &policy).unwrap_err();
+        assert!(err.contains("outside the config directory"), "{err}");
     }
 
     #[test]

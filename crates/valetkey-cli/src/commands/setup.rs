@@ -179,13 +179,13 @@ fn plan_gcloud(
     match cloudsdk_config {
         Some(config) => {
             let config = std::fs::canonicalize(config).map_err(|e| format!("CLOUDSDK_CONFIG: {e}"))?;
-            trust::check_strict(&config, policy).map_err(|e| format!("CLOUDSDK_CONFIG: {e}"))?;
+            trust::check_gcloud_config(&config, policy).map_err(|e| format!("CLOUDSDK_CONFIG: {e}"))?;
             env.insert("CLOUDSDK_CONFIG".to_owned(), config.display().to_string());
         }
         None => {
             let default = policy.home.join(".config/gcloud");
-            if let Ok(default) = std::fs::canonicalize(&default) {
-                trust::check_strict(&default, policy).map_err(|e| format!("gcloud's config directory: {e}"))?;
+            if default.exists() {
+                trust::check_gcloud_config(&default, policy).map_err(|e| format!("gcloud's config directory: {e}"))?;
             }
         }
     }

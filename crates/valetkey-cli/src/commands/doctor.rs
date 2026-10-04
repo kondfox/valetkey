@@ -164,7 +164,7 @@ fn check_secret_source(root: &ValetkeyRoot, user: &UserConfig, id: &str, secret:
                     }
                 }
                 if let Some(config) = tool.env.get("CLOUDSDK_CONFIG")
-                    && let Err(problem) = trust::check_strict(std::path::Path::new(config), &policy)
+                    && let Err(problem) = trust::check_gcloud_config(std::path::Path::new(config), &policy)
                 {
                     o.fail(format!(
                         "  {id}: CLOUDSDK_CONFIG: {} → re-run: {me} setup",
