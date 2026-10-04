@@ -163,6 +163,14 @@ fn check_secret_source(root: &ValetkeyRoot, user: &UserConfig, id: &str, secret:
                         o.fail(format!("  {id}: {} → re-run: {me} setup", for_display(&problem)));
                     }
                 }
+                if let Some(config) = tool.env.get("CLOUDSDK_CONFIG")
+                    && let Err(problem) = trust::check_strict(std::path::Path::new(config), &policy)
+                {
+                    o.fail(format!(
+                        "  {id}: CLOUDSDK_CONFIG: {} → re-run: {me} setup",
+                        for_display(&problem)
+                    ));
+                }
             }
         },
         _ => {}

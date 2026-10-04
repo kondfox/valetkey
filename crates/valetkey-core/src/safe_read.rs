@@ -80,7 +80,10 @@ fn read_checked(file: File, path: &Path, max_len: u64, private: bool) -> Result<
             max: max_len,
         });
     }
-    let mut bytes = Vec::with_capacity(usize::try_from(meta.len()).unwrap_or(0));
+    // Private files hold secrets: allocate the whole bound up front, so a file that grows after
+    // the fstat can't make the buffer reallocate and leave a freed copy behind.
+    let capacity = if private { max_len + 1 } else { meta.len() };
+    let mut bytes = Vec::with_capacity(usize::try_from(capacity).unwrap_or(0));
     // Bounded even if the file grows after the fstat.
     file.take(max_len + 1)
         .read_to_end(&mut bytes)

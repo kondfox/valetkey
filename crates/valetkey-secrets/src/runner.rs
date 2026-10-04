@@ -16,7 +16,6 @@ use std::path::PathBuf;
 use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
 
-use secrecy::zeroize::Zeroize;
 use secrecy::{ExposeSecretMut, SecretBox};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
@@ -71,6 +70,16 @@ pub enum RunError {
     Io { program: PathBuf, source: std::io::Error },
 }
 
+impl RunError {
+    /// For the broker's log: the error plus the program's sanitized stderr, if it failed.
+    pub fn log_detail(&self) -> String {
+        match self {
+            Self::Failed { stderr, .. } if !stderr.is_empty() => format!("{self}; stderr: {stderr}"),
+            other => other.to_string(),
+        }
+    }
+}
+
 /// Runs the invocation and returns its stdout.
 pub async fn run(invocation: &Invocation, limits: Limits) -> Result<SecretBox<Vec<u8>>, RunError> {
     let program = &invocation.program;
@@ -91,7 +100,7 @@ pub async fn run(invocation: &Invocation, limits: Limits) -> Result<SecretBox<Ve
     let mut child = spawn(&mut cmd, program).await?;
     // Kills the group on every exit path, including when the caller drops this future.
     let pid = child.id();
-    let _group = GroupKiller(pid);
+    let group = GroupKiller(std::sync::atomic::AtomicU32::new(pid.unwrap_or(0)));
     let mut stdout = child.stdout.take().expect("stdout is piped");
     let mut stderr = child.stderr.take().expect("stderr is piped");
 
@@ -113,6 +122,11 @@ pub async fn run(invocation: &Invocation, limits: Limits) -> Result<SecretBox<Ve
             return Ok((out, false, err?, None));
         }
         let status = child.wait().await?;
+        // The leader is reaped now, so its pid (= the group id) may be reused at any moment:
+        // never signal it again. Members that still held the pipes kept us from getting here
+        // (we only reach `wait` after both pipes closed); a member that detached its stdio is
+        // left alone.
+        group.disarm();
         Ok::<_, std::io::Error>((out, true, err?, Some(status)))
     };
     let (out, fits, err, status) = match tokio::time::timeout(limits.timeout, work).await {
@@ -172,27 +186,36 @@ async fn spawn(
     }
 }
 
-/// Sends SIGKILL to the child's process group when dropped.
-struct GroupKiller(Option<u32>);
+/// Sends SIGKILL to the child's process group when dropped, unless disarmed. Only armed while
+/// the leader is unreaped, which keeps its pid (the group id) from being reused.
+struct GroupKiller(std::sync::atomic::AtomicU32);
+
+impl GroupKiller {
+    fn disarm(&self) {
+        self.0.store(0, std::sync::atomic::Ordering::SeqCst);
+    }
+}
 
 impl Drop for GroupKiller {
     fn drop(&mut self) {
-        kill_group(self.0);
+        let pid = self.0.load(std::sync::atomic::Ordering::SeqCst);
+        if pid != 0 {
+            kill_group(Some(pid));
+        }
     }
 }
 
 /// Reads into `buf` (allocated with capacity `cap`) until EOF. Returns `false` as soon as more
 /// than `cap` bytes arrive; the extra bytes are never stored.
 async fn read_bounded(reader: &mut (impl AsyncRead + Unpin), buf: &mut Vec<u8>, cap: usize) -> std::io::Result<bool> {
-    let mut chunk = [0u8; 8192];
+    // Zeroized on every exit, including when the future is dropped mid-read.
+    let mut chunk = secrecy::zeroize::Zeroizing::new([0u8; 8192]);
     loop {
-        let n = reader.read(&mut chunk).await?;
+        let n = reader.read(&mut chunk[..]).await?;
         if n == 0 {
-            chunk.zeroize();
             return Ok(true);
         }
         if buf.len() + n > cap {
-            chunk.zeroize();
             return Ok(false);
         }
         buf.extend_from_slice(&chunk[..n]);

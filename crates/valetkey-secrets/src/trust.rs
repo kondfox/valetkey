@@ -43,6 +43,22 @@ impl TrustPolicy {
     }
 }
 
+/// Like [`check`], but warnings are refusals too. For paths that steer a tool rather than run as
+/// code, such as gcloud's config directory (endpoint, proxy and CA overrides): there, even a
+/// group-writable directory is too much.
+pub fn check_strict(path: &Path, policy: &TrustPolicy) -> Result<(), String> {
+    match check(path, policy)?.into_iter().next() {
+        Some(warning) => Err(warning),
+        None => Ok(()),
+    }
+}
+
+/// Whether `path` is a version-manager shim (pyenv, asdf, mise, rbenv, …). A shim picks the real
+/// program from files such as a project-local `.python-version`, which an agent can write.
+pub fn is_shim(path: &Path) -> bool {
+    path.parent().and_then(|p| p.file_name()).is_some_and(|n| n == "shims")
+}
+
 /// Checks a canonical path. `Ok` carries warnings that don't block; `Err` explains the refusal.
 pub fn check(path: &Path, policy: &TrustPolicy) -> Result<Vec<String>, String> {
     let shown = path.display();
