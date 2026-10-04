@@ -53,7 +53,7 @@ pub enum ProjectError {
     SymlinkOnPath(PathBuf),
     #[error("the start directory must be an absolute path, got {0}")]
     NotAbsolute(PathBuf),
-    #[error("the start directory must not contain `.` or `..` components, got {0}")]
+    #[error("the start directory must not contain `..` components, got {0}")]
     NotNormalized(PathBuf),
     #[error("can't inspect {path}: {source}")]
     Io { path: PathBuf, source: io::Error },
@@ -68,6 +68,7 @@ pub fn discover(start: &Path) -> Result<Project, ProjectError> {
         return Err(ProjectError::NotAbsolute(start.to_owned()));
     }
     // Parents are walked lexically, so `..` would make the walk check the wrong ancestors.
+    // (`Path::components` already drops interior `.` components, which are harmless.)
     if start
         .components()
         .any(|c| matches!(c, Component::CurDir | Component::ParentDir))
@@ -138,11 +139,6 @@ mod tests {
     fn non_normalized_start_is_rejected() {
         // A literal path: on Windows, pushing `..` onto a canonical (verbatim) path resolves it.
         let start = if cfg!(windows) { r"C:\work\a\.." } else { "/work/a/.." };
-        assert!(matches!(
-            discover(Path::new(start)),
-            Err(ProjectError::NotNormalized(_))
-        ));
-        let start = if cfg!(windows) { r"C:\work\.\a" } else { "/work/./a" };
         assert!(matches!(
             discover(Path::new(start)),
             Err(ProjectError::NotNormalized(_))
