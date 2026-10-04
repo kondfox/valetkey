@@ -15,7 +15,8 @@ review round found another way a fake binary could get in:
   versioned list for rotation. Every asset ships a `.minisig`, Homebrew bottles included. GitHub
   attestations are optional extras that nothing depends on.
 - Installers and Homebrew only *deliver* the binary. `valetkey install` copies it into valetkey's
-  own write-denied dir and registers that copy at user scope by absolute path.
+  own write-denied dir (`~/.valetkey/bin/`, [[2026-10-04-valetkey-root-dir]]) and registers that
+  copy at user scope by absolute path.
 - After the first install, only the **installed copy** may verify and install a new binary
   (`<installed>/valetkey install --from <path>`). The first install is trust-on-first-use.
 - Every hint valetkey prints uses the absolute path, and `install` prints a shell alias.

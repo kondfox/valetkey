@@ -4,7 +4,8 @@ The LLM-maintained knowledge base for valetkey: the *why* behind the design, ver
 the systems we depend on, and what we learn while building. The schema and maintenance rules are
 in [[CLAUDE]].
 
-**Status (2026-10-04):** design approved; no code yet. Next: the M0 spike (`docs/design.md §11`).
+**Status (2026-10-04):** design approved and M0 spike done ([[2026-10-04-m0-go-no-go]]); no product
+code yet. Next: M1, the skeleton (`docs/design.md §10`).
 
 ## Start here
 
@@ -20,6 +21,8 @@ in [[CLAUDE]].
 ## Sections
 
 - [Decisions](decisions/_index.md): why things are the way they are
+- [Integrations](integrations/_index.md): verified behaviour of Claude Code, Postgres and the
+  rest of what we depend on
 
 More sections appear as the work needs them (see the category catalog in [[CLAUDE]]).
 

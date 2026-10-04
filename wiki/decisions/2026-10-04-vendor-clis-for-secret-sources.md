@@ -33,6 +33,8 @@ read natively. The maintainer confirmed this on 2026-10-04.
   The prototype's review had found crash and hang bugs in a naive runner.
 - Credential file locations are resolved from the human's environment, not assumed
   (`design.md §6.5`).
+- The broker calls each CLI by the absolute path that a human's `valetkey doctor` recorded, never
+  through an inherited `PATH` ([[2026-10-04-broker-environment-allowlist]]).
 
 ## Sources
 - `docs/design.md` §3, §6.5, §6.8 (commit `6181a1d`)

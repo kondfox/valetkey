@@ -21,6 +21,11 @@ to *Superseded* and links to its successor.
 - [[2026-10-04-write-approval-scope]]: when a write needs a human
 - [[2026-10-04-postgres-read-only-guards]]: protocol, transaction and role guards
 - [[2026-10-04-commit-message-convention]]: Conventional Commits + gitmoji after the colon
+- [[2026-10-04-m0-go-no-go]]: M0 results; what held, what missed, what changed
+- [[2026-10-04-out-of-band-write-approval]]: `valetkey approve <id>`; elicitation is display-only
+- [[2026-10-04-local-secret-store]]: `local://` file store; keyring exposed on macOS
+- [[2026-10-04-valetkey-root-dir]]: one short root, `~/.valetkey/`
+- [[2026-10-04-broker-environment-allowlist]]: the broker ignores injected env; fixed `PATH`
 
 ## Superseded
 

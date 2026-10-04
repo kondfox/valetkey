@@ -34,6 +34,7 @@ that table.
 - M0 results are recorded per capability and platform in the wiki: `integrations/` pages, plus a
   go/no-go decision page.
 - Some platforms may ship v0.1 unfenced for protected targets.
+- M0 applied the table on 2026-10-04: [[2026-10-04-m0-go-no-go]].
 
 ## Sources
 - `docs/design.md` §6.5 "Fail closed", §11 go/no-go table; `docs/threat-model.md` A4b

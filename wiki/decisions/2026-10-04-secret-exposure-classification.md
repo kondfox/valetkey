@@ -25,9 +25,10 @@ off exposure (`design.md §6.0`):
 - valetkey can't protect what the project already leaves readable, and it shouldn't pretend to.
 
 ## Consequences
-- `keyring` counts as protected only on platforms where M0 confirms that keychain IPC is blocked
-  ([[2026-10-04-fail-closed-fence-capabilities]]).
-- `init` offers to move `.env` passwords into the OS keyring.
+- `keyring` counts as protected only where the fence verifiably blocks it. M0: exposed on macOS,
+  protected on Linux while unix sockets are denied. Protected local secrets use `local://`
+  ([[2026-10-04-local-secret-store]]).
+- `init` offers to move `.env` passwords into `local://`.
 - `doctor` warns when an env-file value equals a protected secret (compared by hash).
 
 ## Sources

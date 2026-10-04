@@ -15,7 +15,9 @@ writes. The review went back and forth:
 Approval is skipped only for targets that are **agent-usable without valetkey**: the secret is
 exposed **and** the channel is plain TCP to a host the sandbox can reach. The flag is recomputed on
 every call, and approval is required whenever it's unknown. `confirm_writes = true` opts in anyway.
-The prompt itself is built only by the broker, sanitized, and deny-by-default (`design.md §6.10`).
+The request itself is built only by the broker, sanitized, and deny-by-default (`design.md §6.10`).
+Since M0, the approval happens out of band, with `valetkey approve <id>` in a terminal
+([[2026-10-04-out-of-band-write-approval]]); this page decides *when* approval is needed.
 
 ## Why
 - A prompt protects only what the agent couldn't do on its own.

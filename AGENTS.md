@@ -35,8 +35,8 @@ from the project's config.
 
 - Spec: `docs/design.md`. Threat model: `docs/threat-model.md`. Changing either is a design change:
   get it reviewed, and record the *why* in `wiki/decisions/`.
-- Status: design approved; next is the M0 spike (`docs/design.md §11`). No product code before M0
-  is done.
+- Status: design approved; M0 spike done on 2026-10-04 (results in `wiki/integrations/` and
+  `wiki/decisions/2026-10-04-m0-go-no-go.md`). Next is M1, the skeleton (`docs/design.md §10`).
 
 ## Rules
 

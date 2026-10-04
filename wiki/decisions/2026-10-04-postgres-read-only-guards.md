@@ -26,6 +26,20 @@ across the prototype's review and this project's review:
     allow-listed extension members)
   - an installed extension isn't on the allow-list (`extensions.allow` to opt in)
 
+### M0 update (2026-10-04)
+Every guard was tested against real Postgres 15–18 ([[postgres]]). Six changes followed:
+1. The broker's identity query runs **first inside** `BEGIN READ ONLY`, which takes a snapshot.
+   Without it, `SET TRANSACTION READ WRITE` as the first statement escaped.
+2. **Reads always `ROLLBACK`**, which discards `postgres_fdw` remote-view writes and `pg_notify`.
+3. **Both** read-only guards stay. Each alone was bypassed (`DO … COMMIT`, `pg_background`).
+4. The function check no longer skips language `internal`, and adds privileged `SECURITY DEFINER`
+   functions in any language (query B). A new check finds re-granted built-ins (query C).
+5. A **dedicated role per target**, never shared with the application: `pg_terminate_backend`
+   works on any session of the same role.
+6. The cleartext/MD5 refusal is a stream wrapper around `Config::connect_raw` (the "auth guard").
+   `tokio-postgres` has no option for it, and `channel_binding = require` also refuses SCRAM
+   without TLS.
+
 ## Why
 - Each layer stops a different class: the protocol stops statement smuggling, the transaction
   stops plain writes, the role checks stop server-side escapes.
@@ -35,7 +49,8 @@ across the prototype's review and this project's review:
 
 ## Consequences
 - The guards are proven only against a real Postgres (testcontainers), never a mock.
-- M0 items 24 and 31 verify the `COPY` and untrusted-function behaviour.
+- M0 items 24 and 31 confirmed the `COPY` and untrusted-function escapes as real. The tests and the
+  auth-guard prototype are on branch `spike/m0` (`spike/postgres/`).
 
 ## Sources
 - `docs/design.md` §6.9; `docs/threat-model.md` A10, A11, A13 (commit `6181a1d`)

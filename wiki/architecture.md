@@ -19,8 +19,9 @@ valetkey lets an AI agent **use** a credential without being able to **read** it
 
 1. **Broker:** `valetkey mcp`, started by the client outside the sandbox. It exposes only scoped
    tools (`sql_query`, `sql_execute`, `http_request`, …).
-2. **Immutable binary:** a signed release, copied by `valetkey install` into a write-denied dir and
-   registered by absolute path. See [[2026-10-04-binary-provenance-and-registration]].
+2. **Immutable binary:** a signed release, copied by `valetkey install` into the write-denied
+   valetkey root (`~/.valetkey/bin/`, [[2026-10-04-valetkey-root-dir]]) and registered by
+   absolute path. See [[2026-10-04-binary-provenance-and-registration]].
 3. **Fence:** the agent's OS sandbox plus permission rules, generated from the project's config.
    See [[2026-10-04-mcp-interface-per-agent-fence]] and
    [[2026-10-04-fail-closed-fence-capabilities]].
@@ -32,7 +33,8 @@ Why all three are needed: [[2026-10-04-credential-broker-pattern]].
 `design.md §6.7`:
 1. Load the approved snapshot ([[2026-10-04-human-approved-config-snapshot]])
 2. Apply policy: exposure, `writable`, fence state ([[2026-10-04-secret-exposure-classification]])
-3. Approval, for writes that need it ([[2026-10-04-write-approval-scope]])
+3. Approval, for writes that need it: `valetkey approve <id>` in a terminal
+   ([[2026-10-04-write-approval-scope]], [[2026-10-04-out-of-band-write-approval]])
 4. Fetch the secret ([[2026-10-04-vendor-clis-for-secret-sources]])
 5. Execute under limits ([[2026-10-04-postgres-read-only-guards]])
 6. Serialize and audit

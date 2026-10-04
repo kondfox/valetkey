@@ -14,7 +14,7 @@ that the agent could add a target that sends a protected secret to a server it c
 ## Decision
 `valetkey allow` (`design.md §6.1`):
 - It canonicalizes the parsed config and stores a snapshot plus a blake3 hash in a write-denied
-  approvals dir, keyed by the canonical project root.
+  snapshot store (`~/.valetkey/projects/<project-key>/`), keyed by the canonical project root.
 - The broker serves the **snapshot**. If the working file's hash differs, every tool refuses.
 - `allow` stores exactly what it displayed, never re-reading the file.
 - Each change carries a risk label based on its effect.
