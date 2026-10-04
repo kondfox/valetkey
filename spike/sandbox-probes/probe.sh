@@ -176,7 +176,7 @@ cleanup() {
     for l in bootstrap.$$ bootstrap-base.$$; do launchctl bootout "gui/$UID_/valetkey.spike.$l" 2>/dev/null; done
     [ -n "${KC_CREATED:-}" ] && security delete-generic-password -s valetkey-spike-decoy -a spike >/dev/null 2>&1
   else
-    systemctl --user stop "valetkey-spike-$$" "valetkey-spike-base-$$" 2>/dev/null
+    systemctl --user stop "valetkey-spike-$$" "valetkey-spike-base-$$" "valetkey-spike-bus-$$.service" 2>/dev/null
     [ -n "${DBUS_PID:-}" ] && kill "$DBUS_PID" 2>/dev/null
   fi
   rm -f "$REAL_TMP/valetkey-spike-probe-$$" "/tmp/valetkey-spike-probe-$$" "/tmp/claude/valetkey-spike-probe-$$"
@@ -297,7 +297,9 @@ log "Q18 localhost TCP (HTTP listeners on 127.0.0.1:A=$PORT_A and :B=$PORT_B, ou
 mkdir -p "$WORK/www"; echo pong > "$WORK/www/index.html"
 bg python3 -m http.server --bind 127.0.0.1 --directory "$WORK/www" "$PORT_A"
 bg python3 -m http.server --bind 127.0.0.1 --directory "$WORK/www" "$PORT_B"
-for i in 1 2 3 4 5 6 7 8 9 10; do python3 "$NETPY" connect-tcp 127.0.0.1 "$PORT_B" >/dev/null 2>&1 && break; sleep 1; done
+for port in "$PORT_A" "$PORT_B"; do
+  for i in 1 2 3 4 5 6 7 8 9 10; do python3 "$NETPY" connect-tcp 127.0.0.1 "$port" >/dev/null 2>&1 && break; sleep 1; done
+done
 CURL="curl --noproxy '' -sS -m 5 -o /dev/null -w 'http=%{http_code}\n' --fail"
 base tcp.raw-A "python3 $NETPY connect-tcp 127.0.0.1 $PORT_A"
 sbx tcp.default:raw-A        BLOCK default   "python3 $NETPY connect-tcp 127.0.0.1 $PORT_A"
@@ -311,6 +313,14 @@ sbx tcp.tcpallow:proxy-B     BLOCK tcpallow  "$CURL http://127.0.0.1:$PORT_B/"
 sbx tcp.default:proxy-A      BLOCK default   "$CURL http://127.0.0.1:$PORT_A/"
 sbx tcp.default:curl-localhost BLOCK default "curl -sS -m 5 -o /dev/null -w 'http=%{http_code}\n' --fail http://localhost:$PORT_A/"
 lib tcp.nonetkey:raw-A       -     nonetkey  "python3 $NETPY connect-tcp 127.0.0.1 $PORT_A"
+# Port squatting: can a listener started INSIDE the sandbox be reached from the host?
+PORT_C="$(free_port)"
+for cfg in default localbind; do
+  (cd "$PROJ" && HOME="$FAKE" tmo 8 "$SRT" --settings "$CFG/$cfg.json" -c "python3 $NETPY serve-tcp 127.0.0.1 $PORT_C" >/dev/null 2>&1 &)
+  sleep 3
+  base "tcp.squat-from-host:$cfg" "python3 $NETPY connect-tcp 127.0.0.1 $PORT_C"
+  sleep 6
+done
 
 # ---------------------------------------------------------------------------------------------
 log "Q20 network filter: raw IPs, metadata, non-allowlisted domains"
@@ -455,6 +465,12 @@ if [ "$OS" = Linux ]; then
   base systemd.user-run "systemd-run --user --unit valetkey-spike-base-$$ /usr/bin/true && echo ran"
   sbx systemd.default:run BLOCK default "systemd-run --user --unit valetkey-spike-$$ /usr/bin/touch $OUT/systemd-run"
   escaped systemd.default:run:effect "$OUT/systemd-run"
+  BC="busctl --user call org.freedesktop.systemd1 /org/freedesktop/systemd1 org.freedesktop.systemd1.Manager StartTransientUnit 'ssa(sv)a(sa(sv))' valetkey-spike-bus-$$.service fail 1 ExecStart 'a(sbas)' 1 /usr/bin/touch 2 /usr/bin/touch $OUT/busctl false 0"
+  sbx systemd.allowall:busctl-StartTransientUnit BLOCK sockall "$BC"
+  escaped systemd.allowall:busctl:effect "$OUT/busctl"
+  if command -v gdbus >/dev/null; then
+    sbx dbus.allowall:gdbus-systemd-GetUnit - sockall "gdbus call --address unix:path=/run/user/$UID_/bus --dest org.freedesktop.systemd1 --object-path /org/freedesktop/systemd1 --method org.freedesktop.systemd1.Manager.GetUnit init.scope >/dev/null && echo systemd-manager-reachable"
+  fi
   sbx systemd.allowall:run BLOCK sockall "systemd-run --user --unit valetkey-spike-$$ /usr/bin/touch $OUT/systemd-run2"
   escaped systemd.allowall:run:effect "$OUT/systemd-run2"
 fi
