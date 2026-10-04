@@ -134,6 +134,8 @@ fn check_handle(path: &Path, meta: &std::fs::Metadata) -> Result<(), SafeReadErr
     }
     // Hard-link counts and ownership aren't available from stable std on Windows. Native
     // Windows is unfenced anyway (§2.7), so protected targets are never served there.
+    // REVISIT if a Windows fence profile is ever added: add the nlink and owner checks then
+    // (GetFileInformationByHandle, GetSecurityInfo).
     Ok(())
 }
 
