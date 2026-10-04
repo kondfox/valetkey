@@ -335,6 +335,31 @@ pub(crate) mod tests {
         assert_eq!(a.hash(), b.hash());
     }
 
+    /// Pins the canonical form. If this fails, the hash of every existing approval changed: that
+    /// forces every user to re-approve after upgrading. Change it only on purpose, and then bump
+    /// `CANONICAL_FORMAT` (or the kind's `kind_version`) so the reason is explained.
+    #[test]
+    fn canonical_form_is_pinned() {
+        let c = parse("require_fence = false\n[targets.b]\nkind = \"fake\"\nhost = \"h\"\nwritable = true\nsecret = \"local://x\"\n[targets.a]\nkind = \"fake\"\nnote = \"n\"\n").unwrap();
+        assert_eq!(
+            String::from_utf8(c.canonical_bytes()).unwrap(),
+            r#"{"format":1,"min_version":null,"require_fence":false,"targets":{"a":{"connection":{"host":null},"exposure_at_approval":null,"kind":"fake","kind_version":1,"secret":null,"settings":{"note":"n"},"writable":false},"b":{"connection":{"host":"h"},"exposure_at_approval":"protected","kind":"fake","kind_version":1,"secret":"local://x","settings":{"note":null},"writable":true}}}"#
+        );
+        assert_eq!(
+            c.hash().as_str(),
+            "028ba654afc5464810ae0efefe5baa68bbf87198e1d66f5d22f01ce2a42a7fb8"
+        );
+    }
+
+    #[test]
+    fn canonical_bytes_sort_nested_keys() {
+        let mut inner = serde_json::Map::new();
+        inner.insert("z".into(), json!(1));
+        inner.insert("a".into(), json!([{"y": 1, "b": 2}]));
+        let value = sorted(serde_json::Value::Object(inner));
+        assert_eq!(serde_json::to_string(&value).unwrap(), r#"{"a":[{"b":2,"y":1}],"z":1}"#);
+    }
+
     #[test]
     fn canonical_hash_changes_with_content() {
         let a = parse("[targets.a]\nkind = \"fake\"\nhost = \"h1\"\n").unwrap();

@@ -7,11 +7,15 @@ any meaningful edit, the broker serves nothing ([[2026-10-04-human-approved-conf
   pipe. Inside the agent's sandbox it would fail anyway: the valetkey root is write-denied.
 - Reads the file **once**, validates it, and stores exactly what it showed. Approval needs the
   word `yes`.
-- Shows each target (kind, exposure, writable, connection, secret reference) and a per-change
+- Shows the canonical hash it will store, each target (kind, exposure, writable, connection,
+  secret reference, settings), and a per-change
   diff labelled `HIGH` or `low` by effect (`valetkey-core/src/diff.rs`). Every displayed string is
   sanitized (`valetkey-core/src/sanitize.rs`), and non-ASCII target names are flagged.
 - Comment- and whitespace-only edits don't change the canonical hash, so they need no
   re-approval.
 
-Entry point: `crates/valetkey-cli/src/commands/allow.rs`. Snapshot store:
+Entry point: `crates/valetkey-cli/src/commands/allow.rs`. `run()` is the terminal gate; `review()`
+is the whole flow with injected input and output. Its tests cover approving with `yes`, refusing
+every other answer, a file swapped while the prompt waits (the shown config is what's stored),
+invalid configs, unchanged configs, risk labels, and sanitized display. Snapshot store:
 `~/.valetkey/projects/<project-key>/snapshot.json` (`valetkey-core/src/snapshot.rs`).

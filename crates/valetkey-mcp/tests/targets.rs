@@ -3,6 +3,7 @@
 //! answers `roots/list` the way Claude Code does (M0: first root = realpath of the launch dir).
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use rmcp::model::{CallToolRequestParams, ClientCapabilities, ClientConfig, Implementation, ListRootsResult, Root};
 use rmcp::service::RequestContext;
@@ -30,29 +31,50 @@ user = "vk_reader"
 secret = "gcp-sm://acme-stage/DB_PASSWORD"
 "#;
 
+/// How the fake client answers `roots/list`.
+#[derive(Clone)]
+enum Roots {
+    /// No roots capability at all.
+    Unsupported,
+    /// These directories, as `file://` URIs.
+    Dirs(Vec<PathBuf>),
+    /// These raw URIs.
+    Uris(Vec<String>),
+    /// An error response.
+    Fails,
+    /// An answer that comes too late.
+    Slow,
+}
+
 #[derive(Clone)]
 struct FakeClient {
-    roots: Option<Vec<PathBuf>>,
+    roots: Roots,
 }
 
 impl ClientHandler for FakeClient {
     fn get_info(&self) -> ClientConfig {
-        let caps = if self.roots.is_some() {
-            ClientCapabilities::builder().enable_roots().build()
-        } else {
-            ClientCapabilities::default()
+        let caps = match self.roots {
+            Roots::Unsupported => ClientCapabilities::default(),
+            _ => ClientCapabilities::builder().enable_roots().build(),
         };
         ClientConfig::new(caps, Implementation::new("claude-code", "test"))
     }
 
     async fn list_roots(&self, _cx: RequestContext<RoleClient>) -> Result<ListRootsResult, ErrorData> {
-        let roots = self.roots.clone().unwrap_or_default();
-        Ok(ListRootsResult::new(
-            roots
+        let uris = match &self.roots {
+            Roots::Unsupported => Vec::new(),
+            Roots::Dirs(dirs) => dirs
                 .iter()
-                .map(|p| Root::new(url::Url::from_directory_path(p).unwrap().to_string()))
+                .map(|p| url::Url::from_directory_path(p).unwrap().to_string())
                 .collect(),
-        ))
+            Roots::Uris(uris) => uris.clone(),
+            Roots::Fails => return Err(ErrorData::internal_error("no roots for you", None)),
+            Roots::Slow => {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                Vec::new()
+            }
+        };
+        Ok(ListRootsResult::new(uris.into_iter().map(Root::new).collect()))
     }
 }
 
@@ -93,12 +115,17 @@ fn approve(f: &Fixture) {
 }
 
 async fn call(f: &Fixture, env_dir: Option<&Path>, roots: Option<Vec<PathBuf>>) -> Value {
+    call_with(f, env_dir, roots.map_or(Roots::Unsupported, Roots::Dirs)).await
+}
+
+async fn call_with(f: &Fixture, env_dir: Option<&Path>, roots: Roots) -> Value {
     let broker = Broker::new(BrokerConfig {
         root: f.root.clone(),
         registry: registry(),
         platform: Platform::Linux,
         env_project_dir: env_dir.map(Path::to_owned),
         self_path: PathBuf::from("/opt/valetkey/bin/valetkey"),
+        roots_timeout: Duration::from_millis(300),
     });
     let (server_io, client_io) = tokio::io::duplex(64 * 1024);
     let server = tokio::spawn(async move { broker.serve(server_io).await.unwrap().waiting().await });
@@ -266,4 +293,73 @@ async fn loose_root_permissions_refuse_protected_targets() {
     let r = call(&f, Some(&f.project), Some(vec![f.project.clone()])).await;
     let staging = &r["targets"][1];
     assert!(staging["reason"].as_str().unwrap().contains("loose permissions"), "{r}");
+}
+
+/// Only the **first** root counts, as Claude Code puts the launch dir first (M0).
+#[tokio::test]
+async fn only_the_first_root_counts() {
+    let f = fixture();
+    approve(&f);
+    let other = f.project.parent().unwrap().join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    let first_is_project = call_with(
+        &f,
+        Some(&f.project),
+        Roots::Dirs(vec![f.project.clone(), other.clone()]),
+    )
+    .await;
+    assert_eq!(first_is_project["project"]["dir_verified"], true);
+    let first_is_other = call_with(&f, Some(&f.project), Roots::Dirs(vec![other, f.project.clone()])).await;
+    assert_eq!(first_is_other["project"]["dir_verified"], false);
+}
+
+#[tokio::test]
+async fn percent_encoded_roots_are_decoded() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = std::fs::canonicalize(tmp.path()).unwrap();
+    let project = base.join("my repo #1");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(project.join("valetkey.toml"), CONFIG).unwrap();
+    let f = Fixture {
+        _tmp: tmp,
+        project: project.clone(),
+        root: ValetkeyRoot::at(base.join("vk")),
+    };
+    approve(&f);
+    let uri = url::Url::from_directory_path(&project).unwrap().to_string();
+    assert!(uri.contains("%20") && uri.contains("%23"), "{uri}");
+    let r = call_with(&f, Some(&project), Roots::Uris(vec![uri])).await;
+    assert_eq!(r["project"]["dir_verified"], true, "{r}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_symlinked_project_dir_matches_its_realpath_root() {
+    let f = fixture();
+    approve(&f);
+    let link = f.project.parent().unwrap().join("link-to-repo");
+    std::os::unix::fs::symlink(&f.project, &link).unwrap();
+    let r = call_with(&f, Some(&link), Roots::Dirs(vec![f.project.clone()])).await;
+    assert_eq!(r["project"]["dir_verified"], true, "{r}");
+}
+
+/// Every way the roots answer can go wrong leaves the project dir unverified (fail closed).
+#[tokio::test]
+async fn unusable_roots_fail_closed() {
+    let f = fixture();
+    approve(&f);
+    for (what, roots) in [
+        ("a non-file root", Roots::Uris(vec!["https://example.com/repo".into()])),
+        ("a malformed root", Roots::Uris(vec!["not a uri".into()])),
+        ("no roots", Roots::Uris(vec![])),
+        ("an error", Roots::Fails),
+        ("a timeout", Roots::Slow),
+    ] {
+        let r = call_with(&f, Some(&f.project), roots).await;
+        assert_eq!(r["project"]["dir_verified"], false, "{what}: {r}");
+        assert!(
+            r["targets"][1]["reason"].as_str().unwrap().starts_with("refused"),
+            "{what}: {r}"
+        );
+    }
 }

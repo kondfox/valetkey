@@ -24,8 +24,8 @@ use valetkey_core::safe_read::{MAX_CONFIG_LEN, read_untrusted};
 use valetkey_core::snapshot::{self, ApprovalState};
 use valetkey_core::{Exposure, NormalizeCx, Platform, Registry, ValetkeyRoot};
 
-/// How long the broker waits for the client's `roots/list` answer.
-const ROOTS_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long the broker waits for the client's `roots/list` answer, by default.
+pub const DEFAULT_ROOTS_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Everything the broker needs, fixed at startup.
 #[derive(Debug)]
@@ -37,6 +37,9 @@ pub struct BrokerConfig {
     pub env_project_dir: Option<PathBuf>,
     /// The absolute path humans should run for `allow` etc. (§6.3: hints use absolute paths).
     pub self_path: PathBuf,
+    /// How long to wait for the client's `roots/list` answer before treating the project dir as
+    /// unverified.
+    pub roots_timeout: Duration,
 }
 
 /// The MCP server.
@@ -130,7 +133,7 @@ struct TargetReport {
 impl Broker {
     async fn targets_report(&self, peer: &Peer<RoleServer>) -> TargetsReport {
         let client = client_report(peer);
-        let root_dir = first_root(peer).await;
+        let root_dir = first_root(peer, self.config.roots_timeout).await;
         let env_dir = self.config.env_project_dir.clone();
         let dir_verified = match (&env_dir, &root_dir) {
             (Some(env), Some(root)) => same_dir(env, root),
@@ -301,12 +304,12 @@ fn client_report(peer: &Peer<RoleServer>) -> ClientReport {
 /// Roots are deprecated in the newest MCP spec (SEP-2577), but Claude Code sends them (M0). If a
 /// client stops sending them, the cross-check fails closed: protected targets are refused.
 #[allow(deprecated)]
-async fn first_root(peer: &Peer<RoleServer>) -> Option<PathBuf> {
+async fn first_root(peer: &Peer<RoleServer>, timeout: Duration) -> Option<PathBuf> {
     let supports_roots = peer.peer_info().is_some_and(|i| i.capabilities.roots.is_some());
     if !supports_roots {
         return None;
     }
-    let result = tokio::time::timeout(ROOTS_TIMEOUT, peer.list_roots()).await;
+    let result = tokio::time::timeout(timeout, peer.list_roots()).await;
     let roots = match result {
         Ok(Ok(r)) => r.roots,
         Ok(Err(e)) => {

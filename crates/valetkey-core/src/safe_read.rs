@@ -201,6 +201,23 @@ mod tests {
         ));
     }
 
+    /// Windows symlinks are reparse points; they must not be followed.
+    #[cfg(windows)]
+    #[test]
+    fn refuses_windows_symlinks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let secret = tmp.path().join("secret");
+        fs::write(&secret, "TOKEN").unwrap();
+        let link = tmp.path().join("valetkey.toml");
+        if let Err(e) = std::os::windows::fs::symlink_file(&secret, &link) {
+            // Creating symlinks needs Developer Mode or admin rights; CI runners have them.
+            eprintln!("skipping: can't create a symlink here: {e}");
+            return;
+        }
+        let result = read_untrusted(&link, MAX_CONFIG_LEN);
+        assert!(matches!(result, Err(SafeReadError::Link(_))), "{result:?}");
+    }
+
     #[test]
     fn refuses_directories() {
         let tmp = tempfile::tempdir().unwrap();

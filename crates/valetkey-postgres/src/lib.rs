@@ -62,8 +62,11 @@ impl TargetKind for PostgresKind {
 
         let connection = match (&t.host, &t.socket) {
             (Some(host), None) => {
-                if host.is_empty() || host.chars().any(|c| c.is_whitespace() || c.is_control() || c == '/') {
-                    problems.push(problem(format!("invalid host `{}`", host.escape_debug())));
+                if !is_host(host) {
+                    problems.push(problem(format!(
+                        "invalid host `{}`: use a hostname or an IP address (ASCII letters, digits, `.`, `-`, `:`, `[`, `]`)",
+                        host.escape_debug()
+                    )));
                 }
                 if exposure == Exposure::Protected {
                     problems.push(problem(format!(
@@ -129,6 +132,14 @@ impl TargetKind for PostgresKind {
     }
 }
 
+/// A hostname, IPv4 or bracketed/bare IPv6 address. ASCII only, so a look-alike host can't
+/// disguise itself in `allow`.
+fn is_host(s: &str) -> bool {
+    (1..=253).contains(&s.len())
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '[' | ']'))
+}
+
 fn is_alias(s: &str) -> bool {
     (1..=40).contains(&s.len())
         && s.chars()
@@ -175,6 +186,17 @@ mod tests {
         assert!(!staging.writable);
     }
 
+    /// Pins this kind's normalized form. A change here changes every approval's hash: bump
+    /// `KIND_VERSION` when it's intentional.
+    #[test]
+    fn normalized_form_is_pinned() {
+        let c = parse(LOCAL).unwrap();
+        assert_eq!(
+            serde_json::to_string(&c.targets["local-app"]).unwrap(),
+            r#"{"kind":"postgres","kind_version":1,"secret":"env-file://.env#POSTGRES_PASSWORD","exposure_at_approval":"exposed","writable":true,"connection":{"database":"app","host":"localhost","port":5432,"user":"app"},"settings":{"description":null}}"#
+        );
+    }
+
     #[test]
     fn protected_secret_over_tcp_is_refused() {
         let text = LOCAL.replace("env-file://.env#POSTGRES_PASSWORD", "local://local-app");
@@ -218,6 +240,26 @@ mod tests {
             parse_on(STAGING, Platform::MacOs, &long_root).is_ok(),
             "a short alias still fits"
         );
+    }
+
+    #[test]
+    fn hosts_must_be_plain_ascii_hostnames_or_ips() {
+        for good in ["localhost", "db.internal", "10.0.0.5", "::1", "[fd00::1]"] {
+            assert!(
+                parse(&LOCAL.replace("\"localhost\"", &format!("'{good}'"))).is_ok(),
+                "{good}"
+            );
+        }
+        // TOML literal strings ('…') keep these characters as they are, so the host check is
+        // what has to reject them.
+        for bad in ["", "db host", "lo\u{202e}calhost", "d\u{0430}tabase", "h/x", "a\\b"] {
+            let text = LOCAL.replace("\"localhost\"", &format!("'{bad}'"));
+            let problems = parse(&text).unwrap_err();
+            assert!(
+                problems.iter().any(|p| p.message.contains("invalid host")),
+                "{bad:?}: {problems:?}"
+            );
+        }
     }
 
     #[test]

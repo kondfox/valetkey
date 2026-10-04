@@ -2,6 +2,7 @@
 
 Append-only, newest first, one self-contained line per entry (format in [[CLAUDE]]).
 
+- 2026-10-04 · M1 tests · Documented the testable allow flow (features/valetkey-allow), the pinned canonical-form tests and coverage commands (workflows/development).
 - 2026-10-04 · M1 review · Recorded safe reads of agent-writable files (no links, FIFOs; parse errors only in the log), per-call exposure, root permission checks and the release dev-root CI guard in features/valetkey-targets-tool, features/valetkey-doctor and workflows/development.
 - 2026-10-04 · M1 · Added the worked end-to-end example to architecture (one valetkey_targets call), new features/ (init, allow, doctor, valetkey_targets), workflows/development, tech-debt/mcp-roots-deprecation, decisions dev-root-only-in-debug-builds and toolchain-and-msrv; 4 glossary terms.
 - 2026-10-04 · decisions · Applied the M0-change review: the valetkey root comes from the OS user database (never HOME); separate snapshot (`projects/`) and write-approval (`write-approvals/`) stores; approvals bound to one request by hash, nonce and expiry; ~/.claude rows narrowed so agent memory stays editable.
