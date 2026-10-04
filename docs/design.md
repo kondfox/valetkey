@@ -667,7 +667,7 @@ same targets, without changing adapters: they only see a socket path.
 
 | | Milestone | Done when |
 |---|---|---|
-| M0 | Spike, no product code | every item in §11 answered and recorded in `docs/spike.md` |
+| M0 | Spike, no product code | every item in §11 answered; results recorded in the wiki (`wiki/integrations/` pages and a go/no-go decision page) |
 | M1 | Skeleton | workspace, CI, config + schema, basic `init`/`allow`/`doctor`, MCP server with `valetkey_targets` |
 | M2 | Postgres read path | `env-file`, `keyring` and `gcp-sm` sources; `sql_query`, `sql_describe`; guard integration tests |
 | M3 | Write path | `sql_execute`, elicitation approval, audit log |
