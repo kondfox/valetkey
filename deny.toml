@@ -1,0 +1,41 @@
+# cargo-deny policy: https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+# Dev-dependencies (test-only MCP clients etc.) don't ship, so they're out of scope.
+exclude-dev = true
+
+[advisories]
+version = 2
+yanked = "deny"
+
+[licenses]
+version = 2
+unused-allowed-license = "allow"
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "CC0-1.0",
+    "BSL-1.0",
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+# Dependency direction (design §4): only the crate that owns a vendor library may import it.
+deny = [
+    { crate = "rmcp", wrappers = ["valetkey-mcp"], reason = "only valetkey-mcp imports the MCP SDK" },
+    { crate = "tokio-postgres", wrappers = ["valetkey-postgres"], reason = "only valetkey-postgres imports the Postgres driver" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

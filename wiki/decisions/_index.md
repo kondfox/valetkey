@@ -26,6 +26,8 @@ to *Superseded* and links to its successor.
 - [[2026-10-04-local-secret-store]]: `local://` file store; keyring exposed on macOS
 - [[2026-10-04-valetkey-root-dir]]: one short root, `~/.valetkey/`
 - [[2026-10-04-broker-environment-allowlist]]: the broker ignores injected env; fixed `PATH`
+- [[2026-10-04-dev-root-only-in-debug-builds]]: `VALETKEY_DEV_ROOT` exists only in debug builds
+- [[2026-10-04-toolchain-and-msrv]]: Rust 1.99.0 pinned, MSRV 1.88
 
 ## Superseded
 

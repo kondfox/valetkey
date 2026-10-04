@@ -20,6 +20,10 @@ Terms as valetkey uses them. Spec references point into `docs/design.md`.
 - **Canonical form:** the deterministic serialization of a parsed `valetkey.toml`, which is what
   gets hashed and approved. §6.1
 - **Channel:** how the broker reaches a target: a protected socket, verified TLS, or plain TCP. §6.2
+- **Canonical hash:** the blake3 hash of a config's canonical form; what an approval binds to.
+  `valetkey-core/src/config.rs`
+- **Composition root:** the one place concrete implementations are wired together:
+  `valetkey-cli` (`main.rs`, `registry()`). §4
 - **Detect:** the fence-profile step that reads the agent client's effective settings to decide
   whether the session is fenced. It's a safety net, not a boundary. §6.4
 - **Exposed secret:** a secret the agent can already read inside the fence (today: an env-file in
@@ -58,10 +62,14 @@ Terms as valetkey uses them. Spec references point into `docs/design.md`.
   `~/.valetkey/sockets/<alias>/.s.PGSQL.5432`. §6.2
 - **Sockets dir:** `~/.valetkey/sockets/`, where proxies put their unix sockets. The agent can
   neither write to it nor connect to it. §6.2
+- **Target kind:** an implementation of `TargetKind` (`valetkey-core/src/config.rs`) that parses and
+  validates one `kind = "…"` of target, e.g. `PostgresKind`. §6.11
 - **Target:** a named resource in `valetkey.toml` (`staging-app`, `crm-sandbox`) with a kind, a
   connection and a secret reference.
 - **valetkey root:** `~/.valetkey/`, the one directory holding all of valetkey's state; the fence
   denies writes to all of it. [[2026-10-04-valetkey-root-dir]]
 - **Unfenced mode:** the broker's behaviour when there's no verified fence: only exposed secrets are
   served. §6.4
+- **`VALETKEY_DEV_ROOT`:** overrides the valetkey root in **debug builds only**, for tests.
+  [[2026-10-04-dev-root-only-in-debug-builds]]
 - **`valetkey.toml`:** the project's committed, non-secret target and policy config. §2.3

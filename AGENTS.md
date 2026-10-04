@@ -35,8 +35,11 @@ from the project's config.
 
 - Spec: `docs/design.md`. Threat model: `docs/threat-model.md`. Changing either is a design change:
   get it reviewed, and record the *why* in `wiki/decisions/`.
-- Status: design approved; M0 spike done on 2026-10-04 (results in `wiki/integrations/` and
-  `wiki/decisions/2026-10-04-m0-go-no-go.md`). Next is M1, the skeleton (`docs/design.md §10`).
+- Status: M1 done on 2026-10-04: a Rust workspace with `init`, `allow`, `doctor` and the MCP tool
+  `valetkey_targets`. Next is M2, the Postgres read path (`docs/design.md §10`).
+- Building, testing and CI: `wiki/workflows/development.md`. Before every commit:
+  `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo test --workspace`.
 
 ## Rules
 

@@ -4,8 +4,9 @@ The LLM-maintained knowledge base for valetkey: the *why* behind the design, ver
 the systems we depend on, and what we learn while building. The schema and maintenance rules are
 in [[CLAUDE]].
 
-**Status (2026-10-04):** design approved and M0 spike done ([[2026-10-04-m0-go-no-go]]); no product
-code yet. Next: M1, the skeleton (`docs/design.md §10`).
+**Status (2026-10-04):** M1 done: a Rust workspace with `init`, `allow`, `doctor` and the MCP tool
+`valetkey_targets`; no tool uses a secret yet. Next: M2, the Postgres read path
+(`docs/design.md §10`).
 
 ## Start here
 
@@ -23,6 +24,9 @@ code yet. Next: M1, the skeleton (`docs/design.md §10`).
 - [Decisions](decisions/_index.md): why things are the way they are
 - [Integrations](integrations/_index.md): verified behaviour of Claude Code, Postgres and the
   rest of what we depend on
+- [Features](features/_index.md): what each command and tool does, with entry points
+- [Workflows](workflows/_index.md): building, testing, CI
+- [Tech debt](tech-debt/_index.md): owed work, open and paid down
 
 More sections appear as the work needs them (see the category catalog in [[CLAUDE]]).
 
