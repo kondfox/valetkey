@@ -1,0 +1,73 @@
+name: spike-sandbox
+
+# M0 spike (docs/design.md §11): run the sandbox capability probes on hosted runners.
+# Decoy credentials only; no secrets are used.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [spike/m0]
+
+permissions:
+  contents: read
+
+jobs:
+  probes:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      SRT_VERSION: 0.0.78
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap socat ripgrep dbus dbus-bin >/dev/null
+          bwrap --version; socat -V | head -2; rg --version | head -1
+
+      - name: Install srt
+        run: |
+          npm install --silent --prefix "$RUNNER_TEMP/srt" "@anthropic-ai/sandbox-runtime@$SRT_VERSION"
+          echo "SRT=$RUNNER_TEMP/srt/node_modules/.bin/srt" >> "$GITHUB_ENV"
+          echo "SRT_PKG=$RUNNER_TEMP/srt/node_modules/@anthropic-ai/sandbox-runtime" >> "$GITHUB_ENV"
+
+      - name: Linux user namespaces, before any sysctl change
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        run: |
+          set -x
+          sysctl kernel.apparmor_restrict_unprivileged_userns || true
+          sysctl kernel.unprivileged_userns_clone || true
+          unshare -Ur id -u || echo "unshare -Ur FAILED"
+          bwrap --ro-bind / / --dev /dev --proc /proc --unshare-user --unshare-net true && echo bwrap-ok || echo "bwrap FAILED"
+          echo '{"network":{"allowedDomains":[],"deniedDomains":[]},"filesystem":{"denyRead":[],"allowRead":[],"allowWrite":[],"denyWrite":[]}}' > "$RUNNER_TEMP/smoke.json"
+          "$SRT" --settings "$RUNNER_TEMP/smoke.json" -c 'echo srt-smoke-ok' || echo "srt smoke FAILED (exit $?)"
+
+      - name: Allow unprivileged user namespaces (Ubuntu 24.04 AppArmor restriction)
+        if: runner.os == 'Linux'
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          "$SRT" --settings "$RUNNER_TEMP/smoke.json" -c 'echo srt-smoke-ok' || echo "srt smoke FAILED (exit $?)"
+
+      - name: Run probes
+        run: |
+          mkdir -p "$RUNNER_TEMP/work"
+          WORK="$RUNNER_TEMP/work" bash spike/sandbox-probes/probe.sh 2>&1 | tee "$RUNNER_TEMP/probe-${{ runner.os }}.log"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: probe-${{ runner.os }}
+          path: ${{ runner.temp }}/probe-${{ runner.os }}.log
