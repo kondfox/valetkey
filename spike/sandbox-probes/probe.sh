@@ -316,7 +316,7 @@ lib tcp.nonetkey:raw-A       -     nonetkey  "python3 $NETPY connect-tcp 127.0.0
 # Port squatting: can a listener started INSIDE the sandbox be reached from the host?
 PORT_C="$(free_port)"
 for cfg in default localbind; do
-  (cd "$PROJ" && HOME="$FAKE" tmo 8 "$SRT" --settings "$CFG/$cfg.json" -c "python3 $NETPY serve-tcp 127.0.0.1 $PORT_C" >/dev/null 2>&1 &)
+  (cd "$PROJ" && HOME="$FAKE" tmo 8 "$SRT" --settings "$CFG/$cfg.json" -c "perl -e 'alarm 8; exec @ARGV' python3 $NETPY serve-tcp 127.0.0.1 $PORT_C" >/dev/null 2>&1 &)
   sleep 3
   base "tcp.squat-from-host:$cfg" "python3 $NETPY connect-tcp 127.0.0.1 $PORT_C"
   sleep 6
@@ -465,7 +465,7 @@ if [ "$OS" = Linux ]; then
   base systemd.user-run "systemd-run --user --unit valetkey-spike-base-$$ /usr/bin/true && echo ran"
   sbx systemd.default:run BLOCK default "systemd-run --user --unit valetkey-spike-$$ /usr/bin/touch $OUT/systemd-run"
   escaped systemd.default:run:effect "$OUT/systemd-run"
-  BC="busctl --user call org.freedesktop.systemd1 /org/freedesktop/systemd1 org.freedesktop.systemd1.Manager StartTransientUnit 'ssa(sv)a(sa(sv))' valetkey-spike-bus-$$.service fail 1 ExecStart 'a(sbas)' 1 /usr/bin/touch 2 /usr/bin/touch $OUT/busctl false 0"
+  BC="busctl --user call org.freedesktop.systemd1 /org/freedesktop/systemd1 org.freedesktop.systemd1.Manager StartTransientUnit 'ssa(sv)a(sa(sv))' valetkey-spike-bus-$$.service fail 1 ExecStart 'a(sasb)' 1 /usr/bin/touch 2 /usr/bin/touch $OUT/busctl false 0"
   sbx systemd.allowall:busctl-StartTransientUnit BLOCK sockall "$BC"
   escaped systemd.allowall:busctl:effect "$OUT/busctl"
   if command -v gdbus >/dev/null; then
