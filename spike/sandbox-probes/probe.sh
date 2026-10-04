@@ -197,11 +197,13 @@ if [ "$OS" = Linux ]; then
   echo "kernel.unprivileged_userns_clone=$(sysctl -n kernel.unprivileged_userns_clone 2>&1)"
   echo "kernel.apparmor_restrict_unprivileged_userns=$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>&1)"
   echo "user.max_user_namespaces=$(sysctl -n user.max_user_namespaces 2>&1)"
-  base userns-unshare 'unshare -Ur id -u'
-  base userns-bwrap 'bwrap --ro-bind / / --dev /dev --proc /proc --unshare-user --unshare-net true && echo bwrap-ok'
 fi
 
 setup
+if [ "$OS" = Linux ]; then
+  base userns-unshare 'unshare -Ur id -u'
+  base userns-bwrap 'bwrap --ro-bind / / --dev /dev --proc /proc --unshare-user --unshare-net true && echo bwrap-ok'
+fi
 PORT_A="$(free_port)"; PORT_B="$(free_port)"
 DOCKER_ALLOW='"/nonexistent"'
 DOCKER_SOCKS=""
@@ -227,7 +229,7 @@ sbx denyread.python         BLOCK denyread "python3 -c 'print(open(\"$G\").read(
 sbx denyread.node           BLOCK denyread "node -e 'console.log(require(\"fs\").readFileSync(\"$G\",\"utf8\"))'"
 sbx denyread.aws-cat        BLOCK denyread "cat $FAKE/.aws/credentials"
 sbx denyread.ssh-cat        BLOCK denyread "cat $FAKE/.ssh/id_ed25519"
-sbx denyread.ls-dir         BLOCK denyread "ls $FAKE/.aws"
+sbx denyread.ls-dir-lists-file BLOCK denyread "ls -A $FAKE/.aws | grep credentials"
 sbx denyread.project-secret BLOCK denyread "cat $WORK/secrets/decoy.txt"
 sbx denyread.cp-to-proj     BLOCK denyread "cp $G $PROJ/stolen && cat $PROJ/stolen"
 sbx denyread.symlink-alias  BLOCK denyread "ln -s $FAKE/.aws $PROJ/aws-alias && cat $PROJ/aws-alias/credentials"
@@ -237,7 +239,8 @@ sbx denyread.control-ok     ALLOW denyread "cat $FAKE/.config/other/readable.txt
 
 # ---------------------------------------------------------------------------------------------
 log "Q26 default write scope (cfg=default is srt's built-in default; HOME=\$WORK/fakehome)"
-[ -d /tmp/claude ] || MADE_TMP_CLAUDE=1
+# srt points TMPDIR at /tmp/claude. Embedders create it; on Linux the sandbox cannot create it itself.
+[ -d /tmp/claude ] || { MADE_TMP_CLAUDE=1; mkdir -p /tmp/claude; }
 for t in "$PROJ/w" "/tmp/valetkey-spike-probe-$$" \
          "$REAL_TMP/valetkey-spike-probe-$$" "$FAKE/.cache/w" "$FAKE/Library/Caches/w" "$FAKE/.claude/w" \
          "$FAKE/.claude/debug/w" "$FAKE/.npm/_logs/w" "$FAKE/.config/w" "$FAKE/w" "$WORK/w"; do
@@ -294,7 +297,7 @@ log "Q18 localhost TCP (HTTP listeners on 127.0.0.1:A=$PORT_A and :B=$PORT_B, ou
 mkdir -p "$WORK/www"; echo pong > "$WORK/www/index.html"
 bg python3 -m http.server --bind 127.0.0.1 --directory "$WORK/www" "$PORT_A"
 bg python3 -m http.server --bind 127.0.0.1 --directory "$WORK/www" "$PORT_B"
-sleep 1
+for i in 1 2 3 4 5 6 7 8 9 10; do python3 "$NETPY" connect-tcp 127.0.0.1 "$PORT_B" >/dev/null 2>&1 && break; sleep 1; done
 CURL="curl --noproxy '' -sS -m 5 -o /dev/null -w 'http=%{http_code}\n' --fail"
 base tcp.raw-A "python3 $NETPY connect-tcp 127.0.0.1 $PORT_A"
 sbx tcp.default:raw-A        BLOCK default   "python3 $NETPY connect-tcp 127.0.0.1 $PORT_A"
@@ -313,11 +316,13 @@ lib tcp.nonetkey:raw-A       -     nonetkey  "python3 $NETPY connect-tcp 127.0.0
 log "Q20 network filter: raw IPs, metadata, non-allowlisted domains"
 base net.raw-1.1.1.1:443 "python3 $NETPY connect-tcp 1.1.1.1 443"
 base net.raw-169.254.169.254:80 "python3 $NETPY connect-tcp 169.254.169.254 80"
+META="h=\$(curl --noproxy '' -s -m 5 -D - -o /dev/null http://169.254.169.254/); echo \"\$h\" | head -1; echo \"\$h\" | grep -iq x-proxy-error && exit 1; [ -n \"\$h\" ]"
 for cfg in default domains nonetkey; do
   run=sbx; [ "$cfg" = nonetkey ] && run=lib
   $run "net.$cfg:raw-169.254.169.254:80" BLOCK "$cfg" "python3 $NETPY connect-tcp 169.254.169.254 80"
   $run "net.$cfg:raw-1.1.1.1:443"        -     "$cfg" "python3 $NETPY connect-tcp 1.1.1.1 443"
-  $run "net.$cfg:proxy-169.254.169.254"  BLOCK "$cfg" "$CURL http://169.254.169.254/"
+  # Reached = any HTTP answer that is not srt's own refusal (X-Proxy-Error header).
+  $run "net.$cfg:http-169.254.169.254"   BLOCK "$cfg" "$META"
   $run "net.$cfg:proxy-https-1.1.1.1"    -     "$cfg" "curl --noproxy '' -sS -m 8 -o /dev/null -w 'http=%{http_code}\n' https://1.1.1.1/"
   $run "net.$cfg:proxy-example.com"      -     "$cfg" "curl -sS -m 8 -o /dev/null -w 'http=%{http_code}\n' https://example.com/"
   $run "net.$cfg:proxy-github.com"       -     "$cfg" "curl -sS -m 8 -o /dev/null -w 'http=%{http_code}\n' https://github.com/"
@@ -346,6 +351,14 @@ for cfg in denylink denytarget denyboth; do
   sym_setup; sbx "sym.$cfg:replace-target-file"     $w $cfg "rm $PROJ/real-file && echo evil > $PROJ/real-file && echo replaced"
   sym_setup; sbx "sym.$cfg:rename-target-dir"       $w $cfg "mv $PROJ/real-dir $PROJ/real-dir.bak && mkdir $PROJ/real-dir && echo replaced"
 done
+# Deny-write the PARENT dir of a link instead (what valetkey could do for entries it owns).
+sym_setup; mkdir -p "$PROJ/parent"; ln -s "$PROJ/real-file" "$PROJ/parent/link"
+write_cfg denyparent <<JSON
+{"network":{"allowedDomains":[],"deniedDomains":[]},"filesystem":{"denyRead":[],"allowRead":[],"allowWrite":["$PROJ"],"denyWrite":["$PROJ/parent"]}}
+JSON
+sbx "sym.denyparent:replace-link-in-denied-dir" BLOCK denyparent "rm $PROJ/parent/link && ln -s /etc/hosts $PROJ/parent/link && echo replaced"
+sbx "sym.denyparent:rename-denied-dir"          BLOCK denyparent "mv $PROJ/parent $PROJ/parent2 && mkdir $PROJ/parent && echo replaced"
+rm -rf "$PROJ/parent" "$PROJ/parent2"
 sym_setup; sbx "sym.projwrite:write-through-link-out-of-scope" BLOCK projwrite "echo x > $PROJ/link-out/new && echo wrote"
 sym_setup
 
@@ -427,11 +440,17 @@ if [ "$OS" = Linux ]; then
     DBUS_PID="$(printf '%s\n' "$dbus_out" | sed -n 2p)"
     echo "started a private session bus: $DBUS_SESSION_BUS_ADDRESS"
   fi
-  DB="dbus-send --session --print-reply --dest=org.freedesktop.DBus / org.freedesktop.DBus.ListNames"
-  base dbus.session "$DB | head -2"
-  sbx dbus.default:session  BLOCK default "$DB | head -2"
-  sbx dbus.allowall:session -     sockall "$DB | head -2"
-  lib dbus.nonetkey:session -     nonetkey "$DB | head -2"
+  DB="dbus-send --session --print-reply --dest=org.freedesktop.DBus / org.freedesktop.DBus.ListNames >/dev/null && echo bus-reachable"
+  base dbus.session "$DB"
+  sbx dbus.default:session  BLOCK default "$DB"
+  sbx dbus.allowall:session -     sockall "$DB"
+  lib dbus.nonetkey:session -     nonetkey "$DB"
+  if [ -S "/run/user/$UID_/bus" ]; then
+    SB="dbus-send --bus=unix:path=/run/user/$UID_/bus --print-reply --dest=org.freedesktop.DBus / org.freedesktop.DBus.ListNames >/dev/null && echo bus-reachable"
+    base dbus.user-bus "$SB"
+    sbx dbus.default:user-bus  BLOCK default "$SB"
+    sbx dbus.allowall:user-bus -     sockall "$SB"
+  fi
   base systemd.user-status "systemctl --user is-system-running"
   base systemd.user-run "systemd-run --user --unit valetkey-spike-base-$$ /usr/bin/true && echo ran"
   sbx systemd.default:run BLOCK default "systemd-run --user --unit valetkey-spike-$$ /usr/bin/touch $OUT/systemd-run"
