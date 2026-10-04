@@ -280,6 +280,11 @@ mod tests {
         };
         let (outcome, _) = review_with(&f, &mut input);
         assert_eq!(outcome, Outcome::Approved);
+        let on_disk = std::fs::read_to_string(f.project.join("valetkey.toml")).unwrap();
+        assert_eq!(
+            on_disk, evil,
+            "the swap must have happened, or this test proves nothing"
+        );
 
         let snap = stored(&f).unwrap();
         assert_eq!(
