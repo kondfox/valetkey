@@ -465,7 +465,7 @@ if [ "$OS" = Linux ]; then
   base systemd.user-run "systemd-run --user --unit valetkey-spike-base-$$ /usr/bin/true && echo ran"
   sbx systemd.default:run BLOCK default "systemd-run --user --unit valetkey-spike-$$ /usr/bin/touch $OUT/systemd-run"
   escaped systemd.default:run:effect "$OUT/systemd-run"
-  BC="busctl --user call org.freedesktop.systemd1 /org/freedesktop/systemd1 org.freedesktop.systemd1.Manager StartTransientUnit 'ssa(sv)a(sa(sv))' valetkey-spike-bus-$$.service fail 1 ExecStart 'a(sasb)' 1 /usr/bin/touch 2 /usr/bin/touch $OUT/busctl false 0"
+  BC="busctl --address=unix:path=/run/user/$UID_/bus call org.freedesktop.systemd1 /org/freedesktop/systemd1 org.freedesktop.systemd1.Manager StartTransientUnit 'ssa(sv)a(sa(sv))' valetkey-spike-bus-$$.service fail 1 ExecStart 'a(sasb)' 1 /usr/bin/touch 2 /usr/bin/touch $OUT/busctl false 0"
   sbx systemd.allowall:busctl-StartTransientUnit BLOCK sockall "$BC"
   escaped systemd.allowall:busctl:effect "$OUT/busctl"
   if command -v gdbus >/dev/null; then
