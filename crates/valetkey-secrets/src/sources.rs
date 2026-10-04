@@ -44,9 +44,16 @@ impl SecretSource for EnvFileSource {
                     e.to_string(),
                 )
             })?;
-            let value = dotenv::lookup(&text, key).ok_or_else(|| {
-                SourceError::new(format!("the env-file `{path}` doesn't define `{key}`"), String::new())
-            })?;
+            let value = dotenv::lookup(&text, key)
+                .map_err(|e| {
+                    SourceError::new(
+                        format!("the env-file `{path}` uses dotenv syntax valetkey can't read reliably: {e}"),
+                        String::new(),
+                    )
+                })?
+                .ok_or_else(|| {
+                    SourceError::new(format!("the env-file `{path}` doesn't define `{key}`"), String::new())
+                })?;
             Ok(SecretString::from(value))
         })
     }
@@ -63,6 +70,11 @@ pub struct LocalSource;
 /// Managing `local://` secrets (`valetkey secret …`). Values are written atomically with mode
 /// `0600` in a `0700` directory; ids are validated like `local://` references.
 impl LocalSource {
+    /// Checks an id without touching the store.
+    pub fn validate_id(id: &str) -> std::io::Result<()> {
+        Self::checked_path(&valetkey_core::ValetkeyRoot::at("/"), id).map(|_| ())
+    }
+
     fn checked_path(root: &valetkey_core::ValetkeyRoot, id: &str) -> std::io::Result<PathBuf> {
         let reference: SecretRef =
             format!("local://{id}")
@@ -277,7 +289,7 @@ impl SecretSource for GcpSmSource {
             let out = runner::run(&invocation, self.limits).await.map_err(|e| {
                 SourceError::new(
                     "fetching the secret from GCP Secret Manager failed (see the valetkey log)",
-                    e.to_string(),
+                    e.log_detail(),
                 )
             })?;
             let text = std::str::from_utf8(out.expose_secret())

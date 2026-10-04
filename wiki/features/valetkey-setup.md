@@ -11,9 +11,14 @@ For `gcloud`:
      contains `.git`, `valetkey.toml` or `.claude`
    - refused if any path or ancestor is owned by another user or is world-writable; group-writable
      is a warning
-3. record `CLOUDSDK_PYTHON` (the SDK's bundled Python, else `python3` from `PATH`) and
-   `CLOUDSDK_CONFIG` if the human has one set ([[gcloud]])
-4. show everything and save on `yes`
+3. record `CLOUDSDK_PYTHON`: the SDK's bundled Python, else `python3` from `PATH`. A
+   version-manager shim (pyenv, asdf, …) is refused, because it picks the interpreter from files
+   like a project's `.python-version` ([[gcloud]]).
+4. check **strictly** (group-writable is a refusal too) whatever steers gcloud: `CLOUDSDK_CONFIG`
+   if the human has one set (a per-project config dir is refused), otherwise `~/.config/gcloud`,
+   and the SDK's installation `properties` file. These set gcloud's endpoints, proxy and CA, so an
+   agent-writable one could send the human's token anywhere.
+5. show everything and save on `yes`
 
-Interactive terminal only. `doctor` re-checks the recorded paths and says when to re-run `setup`.
+Interactive terminal only, and not from the home directory. `doctor` re-checks the recorded paths and says when to re-run `setup`.
 Entry point: `crates/valetkey-cli/src/commands/setup.rs` (`review()` is the testable flow).
