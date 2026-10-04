@@ -1,3 +1,4 @@
+#![cfg_attr(not(unix), allow(unused_imports, dead_code))] // most cases need unix permissions
 //! The sources against real files and a fake `gcloud`. Every failure's public message is checked
 //! for leaked content.
 
