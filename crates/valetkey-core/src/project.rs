@@ -138,7 +138,7 @@ mod tests {
     fn non_normalized_start_is_rejected() {
         let (_t, base) = tmp();
         assert!(matches!(
-            discover(&base.join("a/..")),
+            discover(&base.join("a").join("..")),
             Err(ProjectError::NotNormalized(_))
         ));
     }

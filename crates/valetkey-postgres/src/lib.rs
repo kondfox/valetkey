@@ -168,10 +168,10 @@ mod tests {
         let staging = &c.targets["staging-app"];
         assert_eq!(staging.exposure_at_approval, Some(Exposure::Protected));
         assert_eq!(staging.connection["socket"], "stage-core");
-        assert_eq!(
-            staging.connection["socket_path"],
-            "/Users/dev/.valetkey/sockets/stage-core/.s.PGSQL.5432"
-        );
+        let expected = ValetkeyRoot::at("/Users/dev/.valetkey")
+            .socket_dir("stage-core")
+            .join(SOCKET_FILE);
+        assert_eq!(staging.connection["socket_path"], expected.display().to_string());
         assert!(!staging.writable);
     }
 
