@@ -7,6 +7,8 @@ deleted.
 - [[mcp-roots-deprecation]]: the project-dir cross-check relies on MCP roots, which are deprecated
 - [[target-enum-in-tool-schemas]]: tools take the target as a string, not a closed set
 - [[exposed-tcp-targets-skip-checks]]: the Postgres checks are skipped for exposed TCP targets
+- [[doctor-shows-role-closure]]: humans can't see a target's effective read scope
+- [[testcontainers-port-flake]]: an intermittent test-container failure with unknown cause
 
 ## Paid down
 

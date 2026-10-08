@@ -2,6 +2,7 @@
 
 Append-only, newest first, one self-contained line per entry (format in [[CLAUDE]]).
 
+- 2026-10-08 · M2b · Recorded the review's open follow-ups as tech-debt pages doctor-shows-role-closure and testcontainers-port-flake.
 - 2026-10-05 · M2b review · Role closure now follows every membership edge; checks also run for socket targets (tech-debt/exposed-tcp-targets-skip-checks); documented the closure-wide read scope, the prepared-transactions opt-in and approximate byte counting in features/sql-tools.
 - 2026-10-05 · M2b · Recorded the role-switch escape and PREPARE TRANSACTION finding in integrations/postgres; new features/sql-tools, tech-debt/target-enum-in-tool-schemas; updated postgres-read-only-guards, valetkey-targets-tool, glossary.
 - 2026-10-05 · M2a review · Documented the strict gcloud-config checks, shim refusal and home-dir refusal (features/valetkey-setup), dotenv syntax and its difference from expanding loaders, and the runner's post-reap rule (features/secret-sources).
