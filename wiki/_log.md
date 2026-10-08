@@ -2,6 +2,8 @@
 
 Append-only, newest first, one self-contained line per entry (format in [[CLAUDE]]).
 
+- 2026-10-08 · process · Added workflows/review (the reviewer brief and rounds); AGENTS.md links it, lists M3's spec sections and says where M3 starts.
+- 2026-10-08 · process · Updated the index status; AGENTS.md now holds the working rules (review loop, PRs for code, docs to main, merge-not-force-push for stacked branches, test before commit, verify on real systems) so a new session needs no hand-off.
 - 2026-10-08 · M2b · Recorded the review's open follow-ups as tech-debt pages doctor-shows-role-closure and testcontainers-port-flake.
 - 2026-10-05 · M2b review · Role closure now follows every membership edge; checks also run for socket targets (tech-debt/exposed-tcp-targets-skip-checks); documented the closure-wide read scope, the prepared-transactions opt-in and approximate byte counting in features/sql-tools.
 - 2026-10-05 · M2b · Recorded the role-switch escape and PREPARE TRANSACTION finding in integrations/postgres; new features/sql-tools, tech-debt/target-enum-in-tool-schemas; updated postgres-read-only-guards, valetkey-targets-tool, glossary.
