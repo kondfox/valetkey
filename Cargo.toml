@@ -17,8 +17,10 @@ valetkey-mcp = { path = "crates/valetkey-mcp" }
 valetkey-secrets = { path = "crates/valetkey-secrets" }
 
 anyhow = "1.0.104"
+base64 = "0.23.1"
 blake3 = "1.8.7"
-dotenvy = "0.15.7"
+chrono = { version = "0.4.45", default-features = false, features = ["std"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 keyring = "4.2.0"
 rpassword = "7.5.4"
 secrecy = "0.10.3"
@@ -30,8 +32,11 @@ schemars = "1.2.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 tempfile = "3.27.0"
+testcontainers = "0.27.3"
+testcontainers-modules = { version = "0.15.0", features = ["postgres"] }
 thiserror = "2.0.21"
 tokio = { version = "1.53.2", features = ["macros", "rt-multi-thread", "io-std", "io-util", "process", "time", "sync"] }
+tokio-postgres = { version = "0.7.18", default-features = false, features = ["runtime"] }
 toml = "1.1.6"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std", "env-filter"] }

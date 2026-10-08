@@ -8,7 +8,7 @@ use std::time::Duration;
 use rmcp::model::{CallToolRequestParams, ClientCapabilities, ClientConfig, Implementation, ListRootsResult, Root};
 use rmcp::service::RequestContext;
 use rmcp::{ClientHandler, ErrorData, RoleClient, ServiceExt};
-use serde_json::Value;
+use serde_json::{Value, json};
 use valetkey_core::snapshot::{self, Snapshot};
 use valetkey_core::{NormalizeCx, Platform, Registry, ValetkeyRoot, project};
 use valetkey_mcp::{Broker, BrokerConfig};
@@ -132,10 +132,9 @@ async fn call_with(f: &Fixture, env_dir: Option<&Path>, roots: Roots) -> Value {
     let client = FakeClient { roots }.serve(client_io).await.unwrap();
 
     let tools = client.list_all_tools().await.unwrap();
-    assert_eq!(
-        tools.iter().map(|t| t.name.as_ref()).collect::<Vec<_>>(),
-        ["valetkey_targets"]
-    );
+    let mut names: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
+    names.sort_unstable();
+    assert_eq!(names, ["sql_describe", "sql_query", "valetkey_targets"]);
 
     let result = client
         .call_tool(CallToolRequestParams::new("valetkey_targets"))
@@ -175,8 +174,17 @@ async fn approved_project_lists_its_targets() {
     assert_eq!(targets[0]["secret_exposure"], "exposed");
     assert_eq!(targets[1]["id"], "staging-app");
     assert_eq!(targets[1]["secret_exposure"], "protected");
-    assert!(targets.iter().all(|t| t["available"] == false));
-    assert!(targets[1]["reason"].as_str().unwrap().contains("M2"));
+    // The exposed target is usable; the protected one waits for fence detection (M4).
+    assert_eq!(targets[0]["available"], true);
+    assert_eq!(targets[0]["tools"], json!(["sql_query", "sql_describe"]));
+    assert_eq!(targets[1]["available"], false);
+    assert!(
+        targets[1]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("fence detection arrives in M4"),
+        "{r}"
+    );
 }
 
 #[tokio::test]

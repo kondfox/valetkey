@@ -1,6 +1,11 @@
 //! The Postgres adapter (§6.9). M1 implements only the target's config: its schema, validation and
 //! canonical form. The driver, the read path and the guards arrive in M2.
 
+pub mod checks;
+pub mod guard;
+pub mod read;
+pub mod values;
+
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
@@ -12,7 +17,7 @@ pub const SOCKET_FILE: &str = ".s.PGSQL.5432";
 const DEFAULT_PORT: u16 = 5432;
 
 /// Version of this kind's normalized form; see `NormalizedTarget::kind_version`.
-const KIND_VERSION: u32 = 1;
+const KIND_VERSION: u32 = 3;
 
 /// A `kind = "postgres"` target in `valetkey.toml`.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -36,6 +41,90 @@ pub struct PostgresTarget {
     pub writable: bool,
     /// Free text for humans and the agent.
     pub description: Option<String>,
+    /// Extensions allowed beyond the safe defaults (protected targets refuse others). A HIGH
+    /// change in `allow`: e.g. `dblink` can write through a read-only transaction.
+    #[serde(default)]
+    pub allow_extensions: Vec<String>,
+    /// Skip the check for built-in functions granted beyond their defaults (catalog query C), for
+    /// deliberately hardened databases. A HIGH change in `allow`.
+    #[serde(default)]
+    pub allow_grant_drift: bool,
+    /// Allow a server with `max_prepared_transactions > 0` (e.g. a local DB with two-phase commit
+    /// on). A read-only statement could then leave a prepared transaction and its locks behind, so
+    /// only exposed targets may set it. A HIGH change in `allow`.
+    #[serde(default)]
+    pub allow_prepared_transactions: bool,
+    /// Most rows returned per call (default 1000, at most 10000).
+    pub max_rows: Option<u32>,
+    /// Most result bytes per call (default 1 MiB, at most 16 MiB).
+    pub max_bytes: Option<u32>,
+    /// Statement timeout in milliseconds (default 30000, at most 300000).
+    pub statement_timeout_ms: Option<u32>,
+    /// Not supported yet: verified TLS arrives in M3. Present only to give a clear error.
+    #[schemars(skip)]
+    pub tls: Option<toml::Value>,
+    /// Not supported yet: verified TLS arrives in M3. Present only to give a clear error.
+    #[schemars(skip)]
+    pub sslmode: Option<toml::Value>,
+}
+
+/// Defaults and bounds of the per-target limits.
+pub const DEFAULT_MAX_ROWS: u32 = 1000;
+pub const MAX_MAX_ROWS: u32 = 10_000;
+pub const DEFAULT_MAX_BYTES: u32 = 1024 * 1024;
+pub const MAX_MAX_BYTES: u32 = 16 * 1024 * 1024;
+pub const DEFAULT_STATEMENT_TIMEOUT_MS: u32 = 30_000;
+pub const MAX_STATEMENT_TIMEOUT_MS: u32 = 300_000;
+
+/// A normalized target, read back for a call: what the broker needs to build a request.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+pub struct TargetSpec {
+    pub host: Option<String>,
+    pub port: Option<u16>,
+    pub socket: Option<String>,
+    pub socket_path: Option<String>,
+    pub database: String,
+    pub user: String,
+    pub allow_extensions: Vec<String>,
+    pub allow_grant_drift: bool,
+    #[serde(default)]
+    pub allow_prepared_transactions: bool,
+    pub max_rows: u32,
+    pub max_bytes: u32,
+    pub statement_timeout_ms: u32,
+}
+
+impl TargetSpec {
+    /// Reads the connection and settings of a normalized postgres target.
+    pub fn from_normalized(t: &NormalizedTarget) -> Result<Self, String> {
+        if t.kind != "postgres" {
+            return Err(format!("not a postgres target (kind `{}`)", t.kind));
+        }
+        let mut merged = t.connection.as_object().cloned().ok_or("malformed connection")?;
+        merged.extend(t.settings.as_object().cloned().ok_or("malformed settings")?);
+        serde_json::from_value(serde_json::Value::Object(merged)).map_err(|e| e.to_string())
+    }
+
+    /// Where to connect.
+    pub fn endpoint(&self) -> Result<read::Endpoint, String> {
+        match (&self.socket_path, &self.host) {
+            (Some(path), None) => Ok(read::Endpoint::Socket(path.into())),
+            (None, Some(host)) => Ok(read::Endpoint::Tcp {
+                host: host.clone(),
+                port: self.port.unwrap_or(DEFAULT_PORT),
+            }),
+            _ => Err("malformed endpoint".into()),
+        }
+    }
+
+    pub fn limits(&self) -> read::Limits {
+        read::Limits {
+            max_rows: self.max_rows,
+            max_bytes: self.max_bytes as usize,
+            statement_timeout: std::time::Duration::from_millis(u64::from(self.statement_timeout_ms)),
+            ..read::Limits::default()
+        }
+    }
 }
 
 /// Registers `kind = "postgres"`.
@@ -111,6 +200,61 @@ impl TargetKind for PostgresKind {
                 json!(null)
             }
         };
+        if t.allow_prepared_transactions && exposure == Exposure::Protected {
+            problems.push(problem(
+                "allow_prepared_transactions is only for exposed targets: a protected target never uses a server that allows prepared transactions".into(),
+            ));
+        }
+        if t.tls.is_some() || t.sslmode.is_some() {
+            problems.push(problem(
+                "TLS settings aren't supported yet (verified TLS arrives in M3); a protected target uses `socket`, and this target won't fall back to plain TCP".into(),
+            ));
+        }
+        for ext in &t.allow_extensions {
+            if ext.is_empty() || !ext.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+                problems.push(problem(format!("invalid extension name `{}`", ext.escape_debug())));
+            }
+        }
+        let bounded = |name: &str, value: Option<u32>, default: u32, max: u32, problems: &mut Vec<Problem>| -> u32 {
+            match value {
+                None => default,
+                Some(v) if (1..=max).contains(&v) => v,
+                Some(v) => {
+                    problems.push(Problem::target(
+                        id.as_str(),
+                        format!("`{name}` = {v} is out of range (1–{max})"),
+                    ));
+                    default
+                }
+            }
+        };
+        let max_rows = bounded("max_rows", t.max_rows, DEFAULT_MAX_ROWS, MAX_MAX_ROWS, &mut problems);
+        let max_bytes = bounded(
+            "max_bytes",
+            t.max_bytes,
+            DEFAULT_MAX_BYTES,
+            MAX_MAX_BYTES,
+            &mut problems,
+        );
+        let statement_timeout_ms = bounded(
+            "statement_timeout_ms",
+            t.statement_timeout_ms,
+            DEFAULT_STATEMENT_TIMEOUT_MS,
+            MAX_STATEMENT_TIMEOUT_MS,
+            &mut problems,
+        );
+        let mut connection = connection;
+        if let Some(c) = connection.as_object_mut() {
+            let mut extensions = t.allow_extensions.clone();
+            extensions.sort();
+            extensions.dedup();
+            c.insert("allow_extensions".into(), json!(extensions));
+            c.insert("allow_grant_drift".into(), json!(t.allow_grant_drift));
+            c.insert(
+                "allow_prepared_transactions".into(),
+                json!(t.allow_prepared_transactions),
+            );
+        }
         for (field, value) in [("database", &t.database), ("user", &t.user)] {
             if value.is_empty() || value.chars().any(char::is_control) {
                 problems.push(problem(format!("invalid {field} `{}`", value.escape_debug())));
@@ -127,7 +271,12 @@ impl TargetKind for PostgresKind {
             exposure_at_approval: Some(exposure),
             writable: t.writable,
             connection,
-            settings: json!({ "description": t.description }),
+            settings: json!({
+                "description": t.description,
+                "max_rows": max_rows,
+                "max_bytes": max_bytes,
+                "statement_timeout_ms": statement_timeout_ms,
+            }),
         })
     }
 }
@@ -203,7 +352,55 @@ mod tests {
         let c = parse(LOCAL).unwrap();
         assert_eq!(
             serde_json::to_string(&c.targets["local-app"]).unwrap(),
-            r#"{"kind":"postgres","kind_version":1,"secret":"env-file://.env#POSTGRES_PASSWORD","exposure_at_approval":"exposed","writable":true,"connection":{"database":"app","host":"localhost","port":5432,"user":"app"},"settings":{"description":null}}"#
+            r#"{"kind":"postgres","kind_version":3,"secret":"env-file://.env#POSTGRES_PASSWORD","exposure_at_approval":"exposed","writable":true,"connection":{"allow_extensions":[],"allow_grant_drift":false,"allow_prepared_transactions":false,"database":"app","host":"localhost","port":5432,"user":"app"},"settings":{"description":null,"max_bytes":1048576,"max_rows":1000,"statement_timeout_ms":30000}}"#
+        );
+    }
+
+    #[test]
+    fn prepared_transactions_are_an_exposed_only_opt_in() {
+        assert!(parse(&format!("{LOCAL}allow_prepared_transactions = true\n")).is_ok());
+        let m = messages(&format!("{STAGING}allow_prepared_transactions = true\n"));
+        assert!(m.iter().any(|m| m.contains("only for exposed targets")), "{m:?}");
+    }
+
+    #[test]
+    fn tls_settings_fail_clearly_instead_of_falling_back() {
+        for extra in ["tls = true\n", "sslmode = \"verify-full\"\n"] {
+            let m = messages(&format!("{STAGING}{extra}"));
+            assert!(m.iter().any(|m| m.contains("TLS arrives in M3")), "{extra}: {m:?}");
+        }
+    }
+
+    #[test]
+    fn limits_and_allow_lists_are_validated_and_read_back() {
+        let text = format!(
+            "{STAGING}max_rows = 50\nstatement_timeout_ms = 1000\nallow_extensions = [\"dblink\", \"dblink\"]\nallow_grant_drift = true\n"
+        );
+        let c = parse(&text).unwrap();
+        let spec = TargetSpec::from_normalized(&c.targets["staging-app"]).unwrap();
+        assert_eq!(spec.max_rows, 50);
+        assert_eq!(spec.max_bytes, DEFAULT_MAX_BYTES);
+        assert_eq!(spec.statement_timeout_ms, 1000);
+        assert_eq!(spec.allow_extensions, ["dblink"], "deduplicated");
+        assert!(spec.allow_grant_drift);
+        assert!(
+            matches!(spec.endpoint().unwrap(), read::Endpoint::Socket(p) if p.ends_with("stage-core/.s.PGSQL.5432"))
+        );
+
+        assert!(
+            messages(&format!("{STAGING}max_rows = 0\n"))
+                .iter()
+                .any(|m| m.contains("out of range"))
+        );
+        assert!(
+            messages(&format!("{STAGING}max_rows = 99999\n"))
+                .iter()
+                .any(|m| m.contains("out of range"))
+        );
+        assert!(
+            messages(&format!("{STAGING}allow_extensions = [\"x; drop\"]\n"))
+                .iter()
+                .any(|m| m.contains("invalid extension"))
         );
     }
 

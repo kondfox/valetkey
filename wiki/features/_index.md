@@ -10,3 +10,4 @@ Each page gives what it does, its rules, and its entry point (`file:line`).
 - [[valetkey-setup]]: a human records which vendor CLIs the broker may run
 - [[valetkey-secret]]: manage `local://` secrets
 - [[secret-sources]]: how each `<scheme>://` secret is fetched
+- [[sql-tools]]: `sql_query` and `sql_describe`

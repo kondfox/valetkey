@@ -42,6 +42,24 @@
           "description": "A Postgres database.",
           "type": "object",
           "properties": {
+            "allow_extensions": {
+              "description": "Extensions allowed beyond the safe defaults (protected targets refuse others). A HIGH\nchange in `allow`: e.g. `dblink` can write through a read-only transaction.",
+              "type": "array",
+              "default": [],
+              "items": {
+                "type": "string"
+              }
+            },
+            "allow_grant_drift": {
+              "description": "Skip the check for built-in functions granted beyond their defaults (catalog query C), for\ndeliberately hardened databases. A HIGH change in `allow`.",
+              "type": "boolean",
+              "default": false
+            },
+            "allow_prepared_transactions": {
+              "description": "Allow a server with `max_prepared_transactions > 0` (e.g. a local DB with two-phase commit\non). A read-only statement could then leave a prepared transaction and its locks behind, so\nonly exposed targets may set it. A HIGH change in `allow`.",
+              "type": "boolean",
+              "default": false
+            },
             "database": {
               "description": "The database name. The broker verifies it with `current_database()` on every connect.",
               "type": "string"
@@ -64,6 +82,24 @@
               "type": "string",
               "const": "postgres"
             },
+            "max_bytes": {
+              "description": "Most result bytes per call (default 1 MiB, at most 16 MiB).",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0
+            },
+            "max_rows": {
+              "description": "Most rows returned per call (default 1000, at most 10000).",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0
+            },
             "port": {
               "description": "TCP port (default 5432). Only with `host`.",
               "type": [
@@ -84,6 +120,15 @@
                 "string",
                 "null"
               ]
+            },
+            "statement_timeout_ms": {
+              "description": "Statement timeout in milliseconds (default 30000, at most 300000).",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0
             },
             "user": {
               "description": "The login role. Use a dedicated role per target, never the application's (§6.9).",
