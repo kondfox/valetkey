@@ -2,6 +2,8 @@
 
 Append-only, newest first, one self-contained line per entry (format in [[CLAUDE]]).
 
+- 2026-10-08 · process · Added workflows/review (the reviewer brief and rounds); AGENTS.md links it, lists M3's spec sections and says where M3 starts.
+- 2026-10-08 · process · Updated the index status; AGENTS.md now holds the working rules (review loop, PRs for code, docs to main, merge-not-force-push for stacked branches, test before commit, verify on real systems) so a new session needs no hand-off.
 - 2026-10-05 · M2a review · Documented the strict gcloud-config checks, shim refusal and home-dir refusal (features/valetkey-setup), dotenv syntax and its difference from expanding loaders, and the runner's post-reap rule (features/secret-sources).
 - 2026-10-05 · M2a · Added integrations/gcloud (output format and Python lookup verified in the SDK 496 source), features valetkey-setup, valetkey-secret and secret-sources, decision m2-scope, 2 glossary terms.
 - 2026-10-04 · M1 tests · Documented the testable allow flow (features/valetkey-allow), the pinned canonical-form tests and coverage commands (workflows/development).

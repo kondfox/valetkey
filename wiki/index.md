@@ -4,9 +4,9 @@ The LLM-maintained knowledge base for valetkey: the *why* behind the design, ver
 the systems we depend on, and what we learn while building. The schema and maintenance rules are
 in [[CLAUDE]].
 
-**Status (2026-10-04):** M1 done: a Rust workspace with `init`, `allow`, `doctor` and the MCP tool
-`valetkey_targets`; no tool uses a secret yet. Next: M2, the Postgres read path
-(`docs/design.md §10`).
+**Status (2026-10-08):** M0, M1 and M2a are merged; M2b (Postgres read path, `sql_query`,
+`sql_describe`) is in PR #3. Next: M3, writes with out-of-band approval, the audit log and TLS
+(`docs/design.md §10`). Current status and working rules: `AGENTS.md`.
 
 ## Start here
 

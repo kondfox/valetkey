@@ -24,8 +24,9 @@ depend on, bug postmortems, hacks and tech debt, runbooks, and the domain glossa
 
 **For new feature work:**
 
-`wiki/architecture.md` will contain a worked end-to-end example (added at M1) showing the pattern
-every new adapter or secret source follows. Use it as the template.
+`wiki/architecture.md` has a worked end-to-end example (one MCP call traced through every crate,
+with `file:line` links) showing the pattern every new tool, adapter or secret source follows. Use
+it as the template.
 
 ## What this project is
 
@@ -35,11 +36,58 @@ from the project's config.
 
 - Spec: `docs/design.md`. Threat model: `docs/threat-model.md`. Changing either is a design change:
   get it reviewed, and record the *why* in `wiki/decisions/`.
-- Status: M1 done on 2026-10-04: a Rust workspace with `init`, `allow`, `doctor` and the MCP tool
-  `valetkey_targets`. Next is M2, the Postgres read path (`docs/design.md §10`).
+- **Status (2026-10-08).** The milestones are in `docs/design.md §10`; the latest entries in
+  `wiki/_log.md` say what changed most recently.
+  - M0 (spike), M1 (skeleton) and M2a (secret sources, runner, `setup`, `secret`; PR #2) are
+    merged.
+  - M2b (Postgres read path, `sql_query`, `sql_describe`) is in PR #3, reviewed and waiting for
+    the maintainer's merge.
+  - **Next: M3**: writes (`sql_execute`), out-of-band approval with `valetkey approve`, the audit
+    log, and verified TLS for remote targets. The spec sections:
+    - §6.10: approval (and `wiki/decisions/2026-10-04-out-of-band-write-approval.md`)
+    - §6.2: TLS (post-TLS auth guard, local-address check on the resolved address, pinning,
+      deny-read for local CA keys)
+    - §6.7 step 7: the audit record's fields
+    - §6.8: TLS and CA bundle settings only from user-level config
+    - §6.9: the auth guard wraps the post-TLS stream
+  - **Where M3 starts:** until PR #3 merges, branch `m3-…` from `m2b-postgres` and open M3 as a
+    PR stacked on #3. After #3 merges, merge `main` into the M3 branch (see "How we work").
+  - **Open follow-ups** from earlier reviews are tech-debt pages: see `wiki/tech-debt/_index.md`
+    (on the branch you work on; M2b's are in PR #3).
+  - Until M4 (fence detection), protected targets are refused unless `require_fence = false`.
 - Building, testing and CI: `wiki/workflows/development.md`. Before every commit:
   `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`,
   `cargo test --workspace`.
+
+## How we work
+
+These are the maintainer's standing instructions.
+
+- **Every change gets an adversarial review before it lands**, following
+  `wiki/workflows/review.md`. That page has the reviewer brief (a read-only subagent, fresh per
+  change, the hostile-agent threat model, verify-or-mark-UNVERIFIED), the output format, and the
+  rounds:
+  - the plan before code, for milestones
+  - re-reviews that only check blockers
+  - at most 5 rounds; then stop and ask the maintainer, listing the open blockers
+
+  Non-blocking findings are fixed, or recorded as `wiki/tech-debt/` pages.
+- **Code goes through pull requests. Never merge a PR yourself;** the maintainer does.
+  - Work on a branch and push it for CI.
+  - Open the PR once the review approves and CI is green on Linux, macOS and Windows.
+  - A large milestone may be split into stacked PRs.
+  - The maintainer merges with "rebase and merge", which rewrites the SHAs. To update a stacked
+    branch afterwards, **merge `main` into it** and check that the merged tree matches the
+    reviewed one. Never force-push.
+- **Doc-only changes** (wiki, `docs/`, this file) are committed straight to `main` after the
+  review approves.
+- **Commit only after the test command itself exits 0**, never chained onto a `grep` or `tail`
+  that succeeds anyway.
+- **Verify behaviour on the real system before relying on it**: sandbox capabilities, Postgres,
+  vendor CLIs. Assumptions were wrong often enough in M0 and M2 (`wiki/integrations/`). Record
+  what you verified, and how, on the integration page.
+- The Postgres integration tests need Docker with Linux containers. They skip without it
+  locally, and fail in CI on Linux.
 
 ## Rules
 
