@@ -115,10 +115,6 @@ impl Broker {
         Ok(())
     }
 
-    /// Ends the session: withdraws writes still waiting for approval and waits (bounded) for
-    /// approved writes to finish and be audited. Call it before the runtime is dropped (M3 review
-    /// B2): dropping a runtime drops its tasks, which could cut off a `COMMIT` before its outcome
-    /// is recorded. An `approved` audit record without an outcome means the outcome is unknown.
     /// The longest an approved write can still take (M3 code review C1): re-resolving the session
     /// (roots), fetching the secret, executing, and the longest `COMMIT` bound, plus a margin.
     fn drain_bound(&self) -> Duration {
@@ -130,6 +126,10 @@ impl Broker {
             + Duration::from_secs(20)
     }
 
+    /// Ends the session: withdraws writes still waiting for approval and waits (bounded) for
+    /// approved writes to finish and be audited. Call it before the runtime is dropped (M3 review
+    /// B2): dropping a runtime drops its tasks, which could cut off a `COMMIT` before its outcome
+    /// is recorded. An `approved` audit record without an outcome means the outcome is unknown.
     pub async fn drain(&self) {
         self.shutdown.cancel();
         self.tracker.close();

@@ -17,7 +17,8 @@ run unless stdin and stdout are TTYs, and inside the agent's sandbox it can't wr
 - **To approve, type the request id.** `n` denies, so the broker stops waiting at once. Anything
   else, `yes` included, leaves the request waiting. There's no `--yes`, and there never will be.
 - **Truncated?** A statement over 8 KiB or 200 lines, or a parameter over 256 characters, is shown
-  truncated. The byte limit also applies inside a single line. Approving a truncated request needs
+  truncated. The byte limit also applies inside a single line, and the default view is capped at 200
+  rendered rows (escapes can make text ~10× longer). Approving a truncated request needs
   `--full`.
 - **What gets written:** `~/.valetkey/write-approvals/<id>.json`, published atomically and never
   replacing an existing one (`crates/valetkey-core/src/write_store.rs:294`). It holds the hash of

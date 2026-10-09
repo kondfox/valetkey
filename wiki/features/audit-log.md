@@ -34,7 +34,8 @@ Never a secret.
 
 **When it can't be written:**
 - Writes don't run.
-- Reads still run, with `AUDIT LOG NOT WRITTEN` in `mcp.log`.
+- Reads still run, with `AUDIT LOG NOT WRITTEN` in `mcp.log`. The agent can trigger this by filling
+  the disk from its own write scope; that's a documented residual risk (`docs/threat-model.md`).
 - `valetkey doctor` reports an unwritable audit dir, and warns past 1 GiB
   (`crates/valetkey-cli/src/commands/doctor.rs:206`).
 

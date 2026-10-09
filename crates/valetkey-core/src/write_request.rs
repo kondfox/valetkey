@@ -38,6 +38,9 @@ pub const MAX_PARAMS_TOTAL_BYTES: usize = 64 * 1024;
 /// What `approve` shows without `--full`.
 pub const DISPLAY_MAX_STATEMENT_BYTES: usize = 8 * 1024;
 pub const DISPLAY_MAX_STATEMENT_LINES: usize = 200;
+/// Rendered statement rows shown without `--full`. Escapes can make the text up to ten times longer
+/// than its bytes, so rows are capped too (M3 code review).
+pub const DISPLAY_MAX_STATEMENT_ROWS: usize = 200;
 pub const DISPLAY_MAX_PARAM_CHARS: usize = 256;
 /// Client-supplied names are capped in every view.
 pub const DISPLAY_MAX_CLIENT_CHARS: usize = 64;
@@ -184,6 +187,15 @@ pub fn render(req: &WriteRequest, full: bool) -> Rendered {
             }
         } else {
             blank_run = 0;
+        }
+        if !full && out.lines().count() > DISPLAY_MAX_STATEMENT_ROWS {
+            let rest: usize = lines[i..].iter().map(|l| l.len() + 1).sum();
+            let _ = writeln!(
+                out,
+                "   … │ ✂ TRUNCATED: {rest} more byte(s) not shown; run with --full to see them"
+            );
+            truncated = true;
+            break;
         }
         let shown = if line.len() > budget {
             prefix(line, budget)
@@ -564,6 +576,20 @@ pub(crate) mod tests {
             assert_eq!(rows.iter().filter(|l| **l == "──── end ────").count(), 1);
         }
         assert!(render(&r, false).text.lines().count() < 160);
+    }
+
+    /// Escaped characters expand ~10×; the default view is capped by rendered rows too.
+    #[test]
+    fn escaped_text_is_capped_by_rendered_rows() {
+        let mut r = sample();
+        r.statement = (0..150).map(|_| "\u{202e}".repeat(50)).collect::<Vec<_>>().join("\n");
+        let short = render(&r, false);
+        assert!(short.truncated);
+        assert!(
+            short.text.lines().count() < DISPLAY_MAX_STATEMENT_ROWS + 20,
+            "{}",
+            short.text.lines().count()
+        );
     }
 
     #[test]

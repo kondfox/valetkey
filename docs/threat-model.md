@@ -124,6 +124,10 @@ valetkey release, the agent client itself being compromised.
 - **Data exposure.** Query results reach the agent by design, and a read can see everything **any role in the login role's closure** can read: one statement can switch roles. Limit what each target's role can
   see.
 - **Native Windows** has no sandbox. Deployed targets require WSL2.
+- **Unaudited reads on a full disk.** A read whose audit record can't be written still runs, with
+  a warning in the broker's log, and `doctor` reports it. The agent can usually fill the volume
+  that holds `~/.valetkey/` from its own write scope (the project, the temp dir), and then reads go
+  unaudited until a human frees space. Writes never run unaudited.
 - **Before M4** (fence generation), write approvals, pending requests and the audit log are
   agent-writable or agent-readable: the deny rows that protect them (design §6.5) don't exist yet.
   Writes are only safe to use once M4 lands (maintainer decision, 2026-10-09).
