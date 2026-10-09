@@ -7,12 +7,12 @@
 //! settings that decide how the text is parsed), statement, typed parameters, nonce and expiry.
 //!
 //! The security property is that `approve` computes the hash from the request **it rendered**, and
-//! the broker executes only if that hash equals the hash of the request **it holds in memory**.
-//! `approve` also checks the stored `request_hash` against the fields, but that only catches
-//! corruption: blake3 is unkeyed, so anyone who can write the file can recompute it.
+//! the broker executes only if that hash equals the hash of the request **it holds in memory**. The
+//! pending file stores no hash of its own: blake3 is unkeyed, so a stored hash would prove
+//! nothing.
 //!
-//! [`render`] draws the statement and parameters inside a numbered gutter, so text inside the
-//! statement can't imitate the prompt's own lines, and [`summary`] is the broker-built block shown
+//! [`render`] draws the statement and parameters inside a numbered, hard-wrapped gutter, so text
+//! inside the statement can't imitate the prompt's own lines, and [`summary`] is the broker-built block shown
 //! right above the confirmation prompt.
 
 use std::collections::BTreeMap;
@@ -136,11 +136,19 @@ pub struct Rendered {
     pub truncated: bool,
 }
 
-/// Draws the statement and parameters in a gutter. Every line of agent text starts with a line
-/// number and `│`, so nothing in it can pass for the prompt's own lines. Control characters, ANSI
-/// escapes, bidi overrides and zero-width characters are escaped visibly; newlines stay line
-/// breaks; tabs become a visible `→`; runs of more than two blank lines collapse; lines with
-/// non-ASCII characters are flagged with `⚠` in the gutter.
+/// Draws the statement and parameters in a gutter. Every row of agent text starts with a line
+/// number and `│` (or `┆` for a continuation), so nothing in it can pass for the prompt's own
+/// lines:
+/// - rows are **hard-wrapped** at [`DISPLAY_WIDTH`] columns, so a terminal never soft-wraps agent
+///   text back to column 0 (M3 code review C3)
+/// - control characters, ANSI escapes, bidi overrides and zero-width characters are escaped
+///   visibly; newlines stay line breaks; tabs become a visible `→`
+/// - runs of more than [`MAX_SPACE_RUN`] whitespace characters inside a line, and of more than two
+///   blank lines, collapse into a visible marker
+/// - lines with non-ASCII characters are flagged with `⚠` in the gutter
+///
+/// Without `full`, at most [`DISPLAY_MAX_STATEMENT_LINES`] lines and
+/// [`DISPLAY_MAX_STATEMENT_BYTES`] bytes are shown, counted inside lines too.
 pub fn render(req: &WriteRequest, full: bool) -> Rendered {
     let mut out = String::new();
     let mut truncated = false;
@@ -152,10 +160,10 @@ pub fn render(req: &WriteRequest, full: bool) -> Rendered {
         if lines.len() == 1 { "" } else { "s" },
         req.statement.len()
     );
-    let mut shown_bytes = 0usize;
+    let mut budget = if full { usize::MAX } else { DISPLAY_MAX_STATEMENT_BYTES };
     let mut blank_run = 0usize;
     for (i, line) in lines.iter().enumerate() {
-        if !full && (i >= DISPLAY_MAX_STATEMENT_LINES || shown_bytes >= DISPLAY_MAX_STATEMENT_BYTES) {
+        if !full && i >= DISPLAY_MAX_STATEMENT_LINES {
             let _ = writeln!(
                 out,
                 "   … │ ✂ TRUNCATED: {} more line(s) not shown; run with --full to see them",
@@ -164,9 +172,9 @@ pub fn render(req: &WriteRequest, full: bool) -> Rendered {
             truncated = true;
             break;
         }
-        shown_bytes += line.len() + 1;
         if line.trim().is_empty() {
             blank_run += 1;
+            budget = budget.saturating_sub(line.len() + 1);
             if blank_run > 2 {
                 // Counted and shown when the run ends.
                 if i + 1 == lines.len() || !lines[i + 1].trim().is_empty() {
@@ -177,42 +185,124 @@ pub fn render(req: &WriteRequest, full: bool) -> Rendered {
         } else {
             blank_run = 0;
         }
-        let flag = if has_non_ascii(line) { '⚠' } else { ' ' };
-        let _ = writeln!(out, "{flag}{:>4} │ {}", i + 1, display_line(line));
+        let shown = if line.len() > budget {
+            prefix(line, budget)
+        } else {
+            line
+        };
+        budget = budget.saturating_sub(line.len() + 1);
+        let flag = if has_non_ascii(shown) { '⚠' } else { ' ' };
+        gutter(&mut out, flag, &format!("{}", i + 1), &display_line(shown));
+        if shown.len() < line.len() || (budget == 0 && i + 1 < lines.len()) {
+            let rest: usize = line.len() - shown.len() + lines[i + 1..].iter().map(|l| l.len() + 1).sum::<usize>();
+            let _ = writeln!(
+                out,
+                "   … │ ✂ TRUNCATED: {rest} more byte(s) not shown; run with --full to see them"
+            );
+            truncated = true;
+            break;
+        }
     }
     let _ = writeln!(out, "──── parameters: {} ────", req.params.len());
     for (i, p) in req.params.iter().enumerate() {
         let value = match &p.text {
             None => "NULL".to_owned(),
-            Some(t) => {
-                let shown = if !full && t.chars().count() > DISPLAY_MAX_PARAM_CHARS {
-                    truncated = true;
-                    let head: String = t.chars().take(DISPLAY_MAX_PARAM_CHARS).collect();
-                    format!(
-                        "{}' ✂ TRUNCATED ({} chars; --full shows all)",
-                        quote_body(&head),
-                        t.chars().count()
-                    )
-                } else {
-                    format!("{}'", quote_body(t))
-                };
-                format!("'{shown}")
+            Some(t) if !full && t.chars().count() > DISPLAY_MAX_PARAM_CHARS => {
+                truncated = true;
+                let head: String = t.chars().take(DISPLAY_MAX_PARAM_CHARS).collect();
+                format!(
+                    "'{}' ✂ TRUNCATED ({} chars; --full shows all)",
+                    quote_body(&head),
+                    t.chars().count()
+                )
             }
+            Some(t) => format!("'{}'", quote_body(t)),
         };
         let flag = if p.text.as_deref().is_some_and(has_non_ascii) {
             '⚠'
         } else {
             ' '
         };
-        let _ = writeln!(
-            out,
-            "{flag}{:>4} │ {} = {value}",
-            format!("${}", i + 1),
-            for_display(&p.type_name)
+        gutter(
+            &mut out,
+            flag,
+            &format!("${}", i + 1),
+            &format!("{} = {value}", for_display(&p.type_name)),
         );
     }
     let _ = writeln!(out, "──── end ────");
     Rendered { text: out, truncated }
+}
+
+/// Width of the text column, in terminal columns (non-ASCII counts as two, conservatively).
+pub const DISPLAY_WIDTH: usize = 72;
+/// Longer runs of whitespace inside a line are shown as `⟨N spaces⟩`.
+pub const MAX_SPACE_RUN: usize = 8;
+
+/// Writes `text` as gutter rows: the first labelled `│`, continuations `┆`.
+fn gutter(out: &mut String, flag: char, label: &str, text: &str) {
+    for (n, row) in wrap(text, DISPLAY_WIDTH).iter().enumerate() {
+        if n == 0 {
+            let _ = writeln!(out, "{flag}{label:>4} │ {row}");
+        } else {
+            let _ = writeln!(out, "     ┆ {row}");
+        }
+    }
+}
+
+/// Splits display text into rows of at most `width` columns.
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let mut rows = Vec::new();
+    let mut row = String::new();
+    let mut used = 0;
+    for c in text.chars() {
+        let w = if c.is_ascii() { 1 } else { 2 };
+        if used + w > width && !row.is_empty() {
+            rows.push(std::mem::take(&mut row));
+            used = 0;
+        }
+        row.push(c);
+        used += w;
+    }
+    if !row.is_empty() || rows.is_empty() {
+        rows.push(row);
+    }
+    rows
+}
+
+/// The longest prefix of `s` with at most `max` bytes, on a character boundary.
+fn prefix(s: &str, max: usize) -> &str {
+    let mut cut = max.min(s.len());
+    while !s.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    &s[..cut]
+}
+
+/// Collapses runs of more than [`MAX_SPACE_RUN`] whitespace characters into `⟨N spaces⟩`, so
+/// padding can't push text to where the prompt's own lines would be.
+fn collapse_spaces(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut run = String::new();
+    let flush = |run: &mut String, out: &mut String| {
+        let n = run.chars().count();
+        if n > MAX_SPACE_RUN {
+            out.push_str(&format!("⟨{n} spaces⟩"));
+        } else {
+            out.push_str(run);
+        }
+        run.clear();
+    };
+    for c in text.chars() {
+        if c.is_whitespace() {
+            run.push(c);
+        } else {
+            flush(&mut run, &mut out);
+            out.push(c);
+        }
+    }
+    flush(&mut run, &mut out);
+    out
 }
 
 /// The broker-built summary, shown right above the confirmation prompt.
@@ -270,14 +360,16 @@ fn non_ascii_note(s: &str) -> &'static str {
     }
 }
 
-/// One statement line: tabs as `→` plus padding, everything else through [`for_display`].
+/// One statement line: tabs as `→`, long whitespace runs collapsed, everything else through
+/// [`for_display`].
 fn display_line(line: &str) -> String {
-    for_display(&line.replace('\t', "→   "))
+    for_display(&collapse_spaces(&line.replace('\t', "→ ")))
 }
 
-/// A parameter's text between single quotes: sanitized, with `'` doubled like SQL.
+/// A parameter's text between single quotes: whitespace runs collapsed, sanitized, with `'`
+/// doubled like SQL.
 fn quote_body(text: &str) -> String {
-    for_display(text).replace('\'', "''")
+    for_display(&collapse_spaces(text)).replace('\'', "''")
 }
 
 #[cfg(test)]
@@ -401,7 +493,7 @@ pub(crate) mod tests {
         }
         assert_eq!(body.iter().filter(|l| **l == "──── end ────").count(), 1);
         assert!(out.contains("\\u{001b}[2J"), "ANSI escaped: {out}");
-        assert!(out.contains("→   WHERE"), "tab visible: {out}");
+        assert!(out.contains("→ WHERE"), "tab visible: {out}");
     }
 
     #[test]
@@ -437,6 +529,41 @@ pub(crate) mod tests {
         assert!(!full.truncated);
         assert!(full.text.contains(" 500 │ -- 499"));
         assert!(summary(&r, &short).contains("TRUNCATED (approving needs --full)"));
+    }
+
+    /// M3 code review C3: one long line is cut by the byte cap and hard-wrapped, so no row of agent
+    /// text reaches column 0 on a terminal.
+    #[test]
+    fn a_single_long_line_is_truncated_and_every_row_stays_in_the_gutter() {
+        let mut r = sample();
+        r.statement = format!(
+            "UPDATE t SET a = 1 /*{}──── end ────{}Shown:      in full */",
+            " ".repeat(300),
+            "x".repeat(20 * 1024)
+        );
+        r.params[0].text = Some("y".repeat(3000));
+        let short = render(&r, false);
+        assert!(short.truncated);
+        assert!(short.text.contains("✂ TRUNCATED"), "{}", short.text);
+        assert!(short.text.contains("⟨300 spaces⟩"), "padding collapsed");
+        for full in [false, true] {
+            let out = render(&r, full).text;
+            let rows: Vec<&str> = out.lines().collect();
+            for row in &rows {
+                let is_delimiter = row.starts_with("──── ");
+                assert!(
+                    is_delimiter || row.contains(" │ ") || row.starts_with("     ┆ "),
+                    "{row:?}"
+                );
+                assert!(
+                    row.chars().count() <= DISPLAY_WIDTH + 8,
+                    "{} columns: {row:?}",
+                    row.chars().count()
+                );
+            }
+            assert_eq!(rows.iter().filter(|l| **l == "──── end ────").count(), 1);
+        }
+        assert!(render(&r, false).text.lines().count() < 160);
     }
 
     #[test]

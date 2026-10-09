@@ -48,9 +48,11 @@ pub struct Limits {
     pub max_rows: u32,
     pub max_bytes: usize,
     pub statement_timeout: Duration,
-    /// Connect + checks + statement + fetch.
+    /// Connect + checks + statement + fetch. For writes, everything before `COMMIT`.
     pub call_timeout: Duration,
     pub connect_timeout: Duration,
+    /// Writes: how long to wait for the answer to `COMMIT`. Past it the outcome is unknown.
+    pub commit_timeout: Duration,
 }
 
 impl Default for Limits {
@@ -61,6 +63,8 @@ impl Default for Limits {
             statement_timeout: Duration::from_secs(30),
             call_timeout: Duration::from_secs(60),
             connect_timeout: Duration::from_secs(10),
+            // Above `statement_timeout`, which also bounds `COMMIT` (deferred triggers).
+            commit_timeout: Duration::from_secs(40),
         }
     }
 }
@@ -410,7 +414,6 @@ async fn run(
     })
 }
 
-/// The serialized JSON length of a value, counted by a writer that discards the bytes.
 /// What the server says about itself and the session, from inside the transaction.
 #[derive(Debug, Clone)]
 pub(crate) struct Identity {
@@ -510,6 +513,7 @@ pub(crate) async fn identify(txn: &Transaction<'_>, endpoint: &Endpoint) -> Resu
     })
 }
 
+/// The serialized JSON length of a value, counted by a writer that discards the bytes.
 pub(crate) fn json_len(v: &Value) -> usize {
     struct Count(usize);
     impl std::io::Write for Count {

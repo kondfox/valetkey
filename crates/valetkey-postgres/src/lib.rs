@@ -123,6 +123,9 @@ impl TargetSpec {
             max_rows: self.max_rows,
             max_bytes: self.max_bytes as usize,
             statement_timeout: std::time::Duration::from_millis(u64::from(self.statement_timeout_ms)),
+            // `statement_timeout` also bounds COMMIT's deferred work; leave room for the answer.
+            commit_timeout: std::time::Duration::from_millis(u64::from(self.statement_timeout_ms))
+                + std::time::Duration::from_secs(10),
             ..read::Limits::default()
         }
     }

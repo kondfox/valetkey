@@ -35,14 +35,21 @@ impl Draft {
     }
 }
 
+/// A target id longer than this is cut in the record (ids in an approved config are short; a
+/// longer one is the agent's free text).
+const MAX_TARGET_CHARS: usize = 128;
+/// What a record keeps of a statement that was refused for its size.
+const REFUSED_HEAD_BYTES: usize = 1024;
+
 impl Broker {
+    /// A record of a call whose input passed [`crate::check_input`], so it's bounded.
     pub(crate) fn draft(&self, tool: &str, target: &str, sql: &str, params: &[Value]) -> Draft {
         Draft {
             record: AuditRecord {
                 time: String::new(),
                 tool: tool.to_owned(),
                 outcome: Outcome::Ok,
-                target: Some(target.to_owned()),
+                target: Some(target.chars().take(MAX_TARGET_CHARS).collect()),
                 project_key: None,
                 project_root: None,
                 client_name: None,
@@ -63,14 +70,36 @@ impl Broker {
         }
     }
 
+    /// A record of a call refused for its size (M3 code review C2): the statement's hash, length and
+    /// first KiB, the parameter count, never the whole input. Otherwise oversized calls could fill
+    /// the disk and switch read auditing off.
+    pub(crate) fn draft_oversized(&self, tool: &str, target: &str, sql: &str, params: &[Value]) -> Draft {
+        let mut draft = self.draft(tool, target, "", &[]);
+        let mut cut = REFUSED_HEAD_BYTES.min(sql.len());
+        while !sql.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        draft.record.statement = Some(sql[..cut].to_owned());
+        draft.record.statement_hash = Some(valetkey_core::write_request::statement_hash(sql));
+        draft.record.reason = Some(format!(
+            "input too large; recorded: the first {cut} of {} statement bytes, none of the {} parameters",
+            sql.len(),
+            params.len()
+        ));
+        draft
+    }
+
     /// Writes the record with `outcome`. `false` (and a warning in `mcp.log`) when it can't be
     /// written.
     pub(crate) fn audit(&self, draft: &Draft, outcome: Outcome, reason: Option<&str>) -> bool {
         let mut record = draft.record.clone();
         record.time = now();
         record.outcome = outcome;
-        if reason.is_some() {
-            record.reason = reason.map(str::to_owned);
+        if let Some(reason) = reason {
+            record.reason = Some(match record.reason.take() {
+                Some(note) => format!("{reason} ({note})"),
+                None => reason.to_owned(),
+            });
         }
         record.duration_ms = Some(u64::try_from(draft.started.elapsed().as_millis()).unwrap_or(u64::MAX));
         match audit::append(&self.config.root, &record) {

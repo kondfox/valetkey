@@ -628,7 +628,8 @@ runs it on macOS and Linux runners, where the agent isn't present.
    record without an outcome means the outcome is unknown. A write whose `approved` record can't be
    written doesn't run; a read that can't be audited still runs, with a warning in the log, and
    `doctor` reports it. Every SQL tool caps the statement at 64 KiB and parameters at 100, 4 KiB
-   each and 64 KiB in total.
+   each and 64 KiB in total; a call refused for its size is recorded with only the statement's
+   hash, length and first KiB.
 
 ### 6.8 Broker environment and process runner
 
@@ -776,8 +777,9 @@ the server-inferred parameter types; it's rolled back. After approval, a new con
 equal the approved ones, executes the one statement **without a row limit**, so it always runs to
 completion (a row-limited portal would run a writing `SELECT` only partway and commit that part),
 keeps the result rows that fit the limits, and commits. A single result message over the
-connection guard's cap cuts the connection, which rolls the write back. A connection lost during
-`COMMIT` is reported as an unknown outcome.
+connection guard's cap cuts the connection, which rolls the write back. The call's time limit
+covers everything **before** `COMMIT`; `COMMIT` has its own bound (`statement_timeout` + 10 s), and
+a connection lost or no answer during `COMMIT` is reported as an unknown outcome, never as an error.
 
 Per-call approval is skipped only for targets that are **agent-usable without valetkey**: the
 secret is exposed **and** the channel is plain TCP to a host the sandbox's network rules let the
@@ -846,13 +848,16 @@ The human approves exactly what the prompt shows, so the agent mustn't be able t
   characters are escaped visibly, and non-ASCII identifiers are flagged. The `allow` diff uses
   the same rules.
 - The prompt contains no free text from the agent (no "reason" field).
-- The statement and parameters are drawn in a numbered gutter between fixed delimiters, so text
-  inside the statement can't imitate the prompt's own lines; long runs of blank lines collapse.
+- The statement and parameters are drawn in a numbered gutter between fixed delimiters, hard-wrapped
+  at 72 columns with a continuation gutter, so text inside the statement can't imitate the prompt's
+  own lines, and a terminal never soft-wraps it back to column 0. Long runs of whitespace and of
+  blank lines collapse into visible markers.
   Parameters are shown as the exact text sent, with their types, and SQL `NULL` distinct from
   `'null'`. A broker-built summary (target, identity, sizes, hash, expiry) sits right above the
   confirmation prompt.
-- A statement or parameter too long to show in full is marked as truncated, and its hash is shown;
-  approving it needs `approve <id> --full`.
+- A statement or parameter too long to show in full (over 8 KiB or 200 lines, counted inside lines
+  too; a parameter over 256 characters) is marked as truncated, and its hash is shown; approving it
+  needs `approve <id> --full`.
 - Timeout, cancellation or an error counts as a denial.
 - The rendered request is fixed once it's written. The terminal shows exactly what the broker will
   execute.

@@ -27,7 +27,12 @@ changing the real user config).
 - Interactively, a call running over 2 minutes moves to a background task. An open elicitation
   dialog keeps it in the foreground.
 - **UNVERIFIED on the real client.** The `claude -p` run on 2026-10-08 couldn't start (expired
-  login). Unverified: the timeout, what Esc sends, and how the display-only elicitation looks.
+  login). Unverified:
+  - the timeout
+  - what Esc sends
+  - how the display-only elicitation looks
+  - whether its dialog stays open after the broker stops waiting (the broker drops the request
+    future)
 
 ## Quirks
 

@@ -53,6 +53,9 @@ use crate::writes::{SqlExecuteArgs, WriteState};
 /// at WARN. The binary and the log-content tests both use this constant.
 pub const LOG_FILTER: &str = "info,rmcp=warn";
 
+/// How long a secret fetch can take: the process runner's timeout (`valetkey-secrets`).
+const SECRET_FETCH_BOUND: Duration = Duration::from_secs(20);
+
 /// How long the broker waits for the client's `roots/list` answer, by default.
 pub const DEFAULT_ROOTS_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -103,6 +106,8 @@ impl Broker {
 
     /// Serves MCP over stdin/stdout until the client disconnects, then [`Broker::drain`]s.
     pub async fn serve_stdio(self) -> anyhow::Result<()> {
+        // Requests orphaned by an earlier broker that was killed.
+        valetkey_core::write_store::sweep(&self.config.root);
         let service = self.clone().serve(rmcp::transport::stdio()).await?;
         let result = service.waiting().await;
         self.drain().await;
@@ -114,11 +119,24 @@ impl Broker {
     /// approved writes to finish and be audited. Call it before the runtime is dropped (M3 review
     /// B2): dropping a runtime drops its tasks, which could cut off a `COMMIT` before its outcome
     /// is recorded. An `approved` audit record without an outcome means the outcome is unknown.
+    /// The longest an approved write can still take (M3 code review C1): re-resolving the session
+    /// (roots), fetching the secret, executing, and the longest `COMMIT` bound, plus a margin.
+    fn drain_bound(&self) -> Duration {
+        let limits = valetkey_postgres::read::Limits::default();
+        self.config.roots_timeout
+            + SECRET_FETCH_BOUND
+            + limits.call_timeout
+            + Duration::from_millis(u64::from(valetkey_postgres::MAX_STATEMENT_TIMEOUT_MS))
+            + Duration::from_secs(20)
+    }
+
     pub async fn drain(&self) {
         self.shutdown.cancel();
         self.tracker.close();
-        let bound = valetkey_postgres::read::Limits::default().call_timeout + Duration::from_secs(5);
-        if tokio::time::timeout(bound, self.tracker.wait()).await.is_err() {
+        if tokio::time::timeout(self.drain_bound(), self.tracker.wait())
+            .await
+            .is_err()
+        {
             tracing::warn!("writes still running at shutdown; their audit records may lack an outcome");
         }
     }
@@ -363,12 +381,16 @@ impl Broker {
     ) -> CallToolResult {
         let started = std::time::Instant::now();
         let statement_hash = blake3::hash(sql.as_bytes()).to_hex()[..16].to_owned();
-        let mut draft = self.draft(tool, target, sql, params);
         if let Err(reason) = check_input(sql, params) {
-            self.audit(&draft, Outcome::Refused, Some(&reason));
+            self.audit(
+                &self.draft_oversized(tool, target, sql, params),
+                Outcome::Refused,
+                Some(&reason),
+            );
             tracing::info!(tool, target = %sanitize(target), outcome = "refused", "sql call");
             return tool_error(reason);
         }
+        let mut draft = self.draft(tool, target, sql, params);
         let s = resolve(&self.config, peer).await;
         draft.session(&s);
         let usable = match evaluate(&self.config, &s, target) {

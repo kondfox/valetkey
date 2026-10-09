@@ -107,10 +107,14 @@ pgcrypto function. Without pgcrypto on the list it flags pgcrypto's 36 C functio
   the `-c` options sent at startup won: `'a\'` stayed a literal backslash, and `01/02/2026` parsed
   as January 2.
 - **Row-limited portals run a writing `SELECT` only partway.** With `Execute(n)`, only the first
-  rows' function calls happen. Writes therefore use `query_raw` (no limit), and `rows_affected`
+  rows' function calls happen (`a_row_limited_portal_runs_a_writing_select_only_partway`: 5 of 15
+  calls). Writes therefore use `query_raw` (no limit), and `rows_affected`
   comes from `CommandComplete` (`tokio-postgres` 0.7.18 sets it only there, `src/query.rs:354-357`).
   The client's response channel has capacity 1 (`src/client.rs:97`), so an unlimited stream keeps
   backpressure.
+- **`COMMIT` can outlast the client's wait.** A deferred constraint trigger made `COMMIT` take 3 s;
+  valetkey stopped waiting after 1 s (unknown outcome), and the server committed anyway. That's why
+  a timeout during `COMMIT` is reported as `unknown`.
 - **A role-level `search_path` change** between two logins changes both `search_path` and
   `current_schemas(true)`. The write path compares both.
 

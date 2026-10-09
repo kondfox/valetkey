@@ -23,7 +23,11 @@ Never a secret.
 
 **Writing:**
 - One `write_all` per record, holding an exclusive `flock`, so concurrent brokers never interleave
-  records. A test runs 8 threads × 10 records of 200 KiB each.
+  records. A test runs 8 threads × 10 records of 200 KiB each. The lock is waited for at most
+  2 s, so a stuck holder can't hang the broker; the record then counts as not written.
+- **Records stay bounded.** Accepted input is already capped (statement 64 KiB, parameters
+  64 KiB). A call refused for its size keeps only the statement's hash, length and first KiB.
+  Target ids are cut at 128 characters.
 - Files are 0600 in a 0700 directory, opened without following links.
 - A file rolls over to `N+1` past 64 MiB. **Auditing never stops on its own**: a stopping cap
   would let the agent switch it off by padding its calls ([[2026-10-09-m3-scope]]).

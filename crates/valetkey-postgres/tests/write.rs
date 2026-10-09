@@ -363,9 +363,17 @@ async fn transaction_control_in_the_statement() {
         "PREPARE TRANSACTION 'x'",
     ] {
         let r = tokio::time::timeout(Duration::from_secs(20), write(&pg, stmt, &[], l())).await;
-        let e = r.unwrap_or_else(|_| panic!("{stmt} hung")).unwrap_err();
-        let _ = e;
+        r.unwrap_or_else(|_| panic!("{stmt} hung")).unwrap_err();
+        assert_eq!(
+            scalar(&pg, "SELECT count(*) FROM items").await,
+            2,
+            "{stmt} changed nothing"
+        );
     }
+    assert_eq!(
+        scalar(&pg, "SELECT count(*) FROM pg_indexes WHERE indexname = 'i'").await,
+        0
+    );
     assert_eq!(scalar(&pg, "SELECT count(*) FROM pg_prepared_xacts").await, 0);
     // Multiple statements are still impossible.
     let e = write(&pg, "UPDATE items SET name = 'a'; DELETE FROM items", &[], l())
@@ -399,4 +407,61 @@ async fn syntax_errors_and_parameter_counts_fail_before_approval() {
         prepare(&pg, "UPDATE items SET name = $1", &[]).await.unwrap_err(),
         ReadError::ParamCount { expected: 1, got: 0 }
     ));
+}
+
+/// The reason writes don't use a row-limited portal (M3 review B3): with `Execute(n)`, a writing
+/// `SELECT` runs only as far as the rows fetched.
+#[tokio::test]
+async fn a_row_limited_portal_runs_a_writing_select_only_partway() {
+    if !docker_available() {
+        return;
+    }
+    let pg = start(&[]).await;
+    let mut client = admin_client(&pg).await;
+    let txn = client.transaction().await.unwrap();
+    let statement = txn
+        .prepare("SELECT write_fn(g) FROM generate_series(1, 15) g")
+        .await
+        .unwrap();
+    let portal = txn.bind(&statement, &[]).await.unwrap();
+    let rows = txn.query_portal(&portal, 5).await.unwrap();
+    assert_eq!(rows.len(), 5);
+    let calls: i64 = txn.query_one("SELECT count(*) FROM calls", &[]).await.unwrap().get(0);
+    assert_eq!(calls, 5, "only the fetched rows' calls ran");
+    txn.rollback().await.unwrap();
+}
+
+/// M3 code review C1: once COMMIT is sent, a timeout means the outcome is unknown, not an error;
+/// here the commit really happens after valetkey stopped waiting.
+#[tokio::test]
+async fn a_commit_without_an_answer_is_reported_as_unknown() {
+    if !docker_available() {
+        return;
+    }
+    let pg = start(&[]).await;
+    admin(
+        &pg,
+        "CREATE FUNCTION slow_check() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(3); RETURN NULL; END $$;
+         CREATE CONSTRAINT TRIGGER slow AFTER UPDATE ON items DEFERRABLE INITIALLY DEFERRED
+             FOR EACH ROW EXECUTE FUNCTION slow_check();",
+    )
+    .await;
+    let limits = Limits {
+        commit_timeout: Duration::from_secs(1),
+        ..Limits::default()
+    };
+    let e = write(&pg, "UPDATE items SET name = 'late' WHERE id = 1", &[], limits)
+        .await
+        .unwrap_err();
+    assert!(matches!(e, ReadError::CommitUnknown(_)), "{e:?}");
+    // The server finishes the commit on its own; the outcome really was unknown, not a failure.
+    let mut committed = 0;
+    for _ in 0..20 {
+        committed = scalar(&pg, "SELECT count(*) FROM items WHERE name = 'late'").await;
+        if committed == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert!(committed <= 1);
 }

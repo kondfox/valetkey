@@ -154,6 +154,13 @@ impl Broker {
     }
 
     async fn execute_flow(self, args: SqlExecuteArgs, ctx: RequestContext<RoleServer>) -> CallToolResult {
+        // Size first: nothing unbounded reaches an audit record (M3 code review C2).
+        if let Err(reason) = check_input(&args.sql, &args.params) {
+            let draft = self.draft_oversized("sql_execute", &args.target, &args.sql, &args.params);
+            self.audit(&draft, Outcome::Refused, Some(&reason));
+            tracing::info!(tool = "sql_execute", target = %crate::sanitize(&args.target), outcome = "refused", "sql call");
+            return tool_error(reason);
+        }
         let mut draft = self.draft("sql_execute", &args.target, &args.sql, &args.params);
         let statement_hash = draft.record.statement_hash.clone().unwrap_or_default();
         let short_hash = statement_hash.get(..16).unwrap_or_default().to_owned();
@@ -171,9 +178,6 @@ impl Broker {
                     "refused: sql_execute writes; set allow_write = true to confirm",
                 ),
             );
-        }
-        if let Err(m) = check_input(&args.sql, &args.params) {
-            return end(&draft, Exit::new(Outcome::Refused, m));
         }
         // Synchronous, before the first await (M3 review B7).
         let slot = match self.writes.reserve(&args.target) {

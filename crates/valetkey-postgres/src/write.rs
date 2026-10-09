@@ -112,38 +112,88 @@ async fn prepare_inner(t: &WriteTarget<'_>, sql: &str, params: &[Value]) -> Resu
 }
 
 /// Reconnects, re-verifies against `approved`, executes and commits. See the module docs.
+///
+/// The call timeout covers everything **before** `COMMIT` (M3 code review C1): once `COMMIT` is
+/// sent, the write may have happened, so a timeout there is reported as an unknown outcome, never
+/// as an error. `COMMIT` has its own bound, [`Limits::commit_timeout`].
 pub async fn execute_write(
     t: &WriteTarget<'_>,
     sql: &str,
     params: &[Value],
     approved: &Prepared,
 ) -> Result<WriteResult, ReadError> {
-    let timeout = t.limits.call_timeout;
-    tokio::time::timeout(timeout, execute_inner(t, sql, params, approved))
-        .await
-        .unwrap_or(Err(ReadError::Timeout(timeout)))
-}
-
-async fn execute_inner(
-    t: &WriteTarget<'_>,
-    sql: &str,
-    params: &[Value],
-    approved: &Prepared,
-) -> Result<WriteResult, ReadError> {
     let started = Instant::now();
+    let deadline = tokio::time::Instant::now() + t.limits.call_timeout;
+    let timed_out = |_| ReadError::Timeout(t.limits.call_timeout);
     let report = Arc::new(OnceLock::new());
-    let (mut client, connection) = connect(&spec(t, false), report.clone()).await?;
+    let (mut client, connection) = tokio::time::timeout_at(deadline, connect(&spec(t, false), report.clone()))
+        .await
+        .map_err(timed_out)??;
     let _connection = AbortOnDrop(tokio::spawn(connection));
     let err = |e: tokio_postgres::Error| query_error(e, &report);
 
     // Dropping `txn` on any early return rolls back.
-    let txn = client.build_transaction().read_only(false).start().await.map_err(err)?;
-    let id = identify(&txn, &t.endpoint).await.map_err(err)?;
+    let txn = tokio::time::timeout_at(deadline, client.build_transaction().read_only(false).start())
+        .await
+        .map_err(timed_out)?
+        .map_err(err)?;
+    let ran = tokio::time::timeout_at(deadline, run_statement(&txn, t, sql, params, approved, &report))
+        .await
+        .map_err(timed_out)??;
+
+    match tokio::time::timeout(t.limits.commit_timeout, txn.commit()).await {
+        Ok(Ok(())) => {}
+        // The server answered: COMMIT failed (e.g. a deferred constraint) and rolled back.
+        Ok(Err(e)) if e.as_db_error().is_some() => return Err(err(e)),
+        Ok(Err(e)) => return Err(ReadError::CommitUnknown(e.to_string())),
+        Err(_) => {
+            return Err(ReadError::CommitUnknown(format!(
+                "no answer to COMMIT within {:?}",
+                t.limits.commit_timeout
+            )));
+        }
+    }
+    let row_count = ran.rows.len();
+    Ok(WriteResult {
+        verified: Verified {
+            database: ran.database,
+            user: ran.user,
+        },
+        columns: ran.columns,
+        rows: ran.rows,
+        row_count,
+        rows_affected: ran.rows_affected,
+        truncated: ran.truncated,
+        duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+    })
+}
+
+/// What the statement produced, before `COMMIT`.
+struct Ran {
+    database: String,
+    user: String,
+    columns: Vec<Column>,
+    rows: Vec<Vec<Value>>,
+    rows_affected: Option<u64>,
+    truncated: bool,
+}
+
+/// Identity and checks again, then the statement, to completion. Nothing is committed here.
+async fn run_statement(
+    txn: &tokio_postgres::Transaction<'_>,
+    t: &WriteTarget<'_>,
+    sql: &str,
+    params: &[Value],
+    approved: &Prepared,
+    report: &OnceLock<GuardViolation>,
+) -> Result<Ran, ReadError> {
+    let err = |e: tokio_postgres::Error| query_error(e, report);
+    let id = identify(txn, &t.endpoint).await.map_err(err)?;
     id.check(t.database, t.user, false)?;
     if let Some(what) = first_difference(&approved.identity, &id.details) {
         return Err(ReadError::Changed(what));
     }
-    guard_server(&txn, t, id.max_prepared, &report).await?;
+    guard_server(txn, t, id.max_prepared, report).await?;
 
     let statement = txn.prepare(sql).await.map_err(err)?;
     let typed = typed_params(statement.params(), params)?;
@@ -186,26 +236,13 @@ async fn execute_inner(
         rows.push(values);
     }
     let rows_affected = stream.rows_affected();
-    drop(stream);
-
-    match txn.commit().await {
-        Ok(()) => {}
-        // The server answered: COMMIT failed (e.g. a deferred constraint) and rolled back.
-        Err(e) if e.as_db_error().is_some() => return Err(err(e)),
-        Err(e) => return Err(ReadError::CommitUnknown(e.to_string())),
-    }
-    let row_count = rows.len();
-    Ok(WriteResult {
-        verified: Verified {
-            database: id.database,
-            user: id.user,
-        },
+    Ok(Ran {
+        database: id.database,
+        user: id.user,
         columns,
         rows,
-        row_count,
         rows_affected,
         truncated,
-        duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
     })
 }
 

@@ -179,7 +179,10 @@ async fn approved_project_lists_its_targets() {
     assert_eq!(targets[0]["available"], true);
     // It's writable, so it offers sql_execute, and says writes wait for `valetkey approve`.
     assert_eq!(targets[0]["tools"], json!(["sql_query", "sql_describe", "sql_execute"]));
-    assert!(targets[0]["writes"].as_str().unwrap().contains("valetkey approve"), "{r}");
+    assert!(
+        targets[0]["writes"].as_str().unwrap().contains("valetkey approve"),
+        "{r}"
+    );
     assert_eq!(targets[1]["available"], false);
     assert!(
         targets[1]["reason"]

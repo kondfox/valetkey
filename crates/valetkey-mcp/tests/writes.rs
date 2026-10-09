@@ -590,12 +590,26 @@ async fn reads_are_audited_too() {
         .await
         .unwrap();
     assert!(decode(r).0, "over the statement limit");
+    // A refused, oversized write with a long target: the record stays small (M3 code review C2).
+    let huge = format!("UPDATE items SET name = '{}'", "z".repeat(1024 * 1024));
+    let (is_error, _) = call(
+        &s,
+        json!({ "target": "t".repeat(100_000), "sql": huge, "params": [], "allow_write": true }),
+    )
+    .await;
+    assert!(is_error);
     let recs = records(&e.root);
-    assert_eq!(recs.len(), 2);
+    assert_eq!(recs.len(), 3);
     assert_eq!((recs[0].outcome, recs[0].rows), (Outcome::Ok, Some(1)));
     assert_eq!(
         recs[0].statement.as_deref(),
         Some("SELECT name FROM items WHERE id = $1")
     );
     assert_eq!(recs[1].outcome, Outcome::Refused);
+    assert_eq!(recs[2].outcome, Outcome::Refused);
+    for r in &recs[1..] {
+        let size = serde_json::to_vec(r).unwrap().len();
+        assert!(size < 4 * 1024, "{size} bytes");
+        assert!(r.reason.as_deref().unwrap().contains("statement bytes"), "{r:?}");
+    }
 }

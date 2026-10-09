@@ -193,9 +193,23 @@ pub fn open_read(path: &Path) -> io::Result<File> {
     Ok(file)
 }
 
+/// How long a record waits for another writer's lock before giving up. Callers run on async
+/// worker threads, so this never blocks indefinitely (M3 code review).
+const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
 #[cfg(unix)]
-fn lock(file: File) -> io::Result<nix::fcntl::Flock<File>> {
-    nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusive).map_err(|(_, e)| io::Error::from(e))
+fn lock(mut file: File) -> io::Result<nix::fcntl::Flock<File>> {
+    let deadline = std::time::Instant::now() + LOCK_WAIT;
+    loop {
+        match nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusiveNonblock) {
+            Ok(locked) => return Ok(locked),
+            Err((f, nix::errno::Errno::EWOULDBLOCK)) if std::time::Instant::now() < deadline => {
+                file = f;
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            Err((_, e)) => return Err(io::Error::from(e)),
+        }
+    }
 }
 
 #[cfg(not(unix))]
