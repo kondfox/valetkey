@@ -2,6 +2,7 @@
 
 Append-only, newest first, one self-contained line per entry (format in [[CLAUDE]]).
 
+- 2026-10-09 · M3a · Added decision m3-scope (two PRs, every write approved, pre-M4 gap accepted by the maintainer); features sql-execute, valetkey-approve, audit-log; tech-debt broker-env-not-scrubbed; write-path findings in integrations/postgres (transaction control, startup options beat role settings, row-limited portals); rmcp cancellation semantics; Claude Code 2.1.294's server/discover probe and the documented long-call timeouts (UNVERIFIED on the real client); 4 glossary terms.
 - 2026-10-08 · process · Added workflows/review (the reviewer brief and rounds); AGENTS.md links it, lists M3's spec sections and says where M3 starts.
 - 2026-10-08 · process · Updated the index status; AGENTS.md now holds the working rules (review loop, PRs for code, docs to main, merge-not-force-push for stacked branches, test before commit, verify on real systems) so a new session needs no hand-off.
 - 2026-10-08 · M2b · Recorded the review's open follow-ups as tech-debt pages doctor-shows-role-closure and testcontainers-port-flake.

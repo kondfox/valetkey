@@ -15,6 +15,14 @@ valetkey's MCP server is built on `rmcp`. Verified by reading the 3.5.0 source o
   `elicitation` (off by default) (`src/service/server.rs:896-911,1143-1149`). Capability check:
   `peer.supported_elicitation_modes()`. The raw `create_elicitation` doesn't check the capability.
 
+- **Cancellation doesn't drop the handler.** Each request handler runs as a detached task
+  (`src/service.rs:1585-1617`). `notifications/cancelled` only cancels the `RequestContext.ct` token
+  (`src/service.rs:1645-1653`). A handler that blocks must `select!` on `context.ct`; a `Drop` guard
+  never runs on cancel. Read 2026-10-08 (M3 plan review). Verified by
+  `crates/valetkey-mcp/tests/writes.rs` (`a_cancelled_call_withdraws_its_request`).
+- **Progress:** `peer.notify_progress(ProgressNotificationParam)`; the token comes from
+  `RequestContext.meta.get_progress_token()`.
+
 ## Quirks
 
 - For clients on protocol ≥ `2026-07-28`, elicitation and roots requests must be sent from inside a

@@ -15,6 +15,7 @@
 //!
 //! The whole call has a wall-clock timeout on top of `statement_timeout`.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
@@ -24,7 +25,7 @@ use serde::Serialize;
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_postgres::types::ToSql;
-use tokio_postgres::{Client, NoTls};
+use tokio_postgres::{Client, NoTls, Transaction};
 
 use valetkey_core::sanitize::for_display;
 
@@ -143,13 +144,17 @@ pub enum ReadError {
     Timeout(Duration),
     #[error("database error (see the valetkey log)")]
     Other(String),
+    #[error("refused: {0} changed since the request was approved; nothing was written")]
+    Changed(String),
+    #[error("the outcome is unknown: the connection was lost during COMMIT; check the data before retrying")]
+    CommitUnknown(String),
 }
 
 impl ReadError {
     /// Detail for the broker's log.
     pub fn detail(&self) -> String {
         match self {
-            Self::Connect(d) | Self::AuthFailed(d) | Self::Other(d) => d.clone(),
+            Self::Connect(d) | Self::AuthFailed(d) | Self::Other(d) | Self::CommitUnknown(d) => d.clone(),
             other => other.to_string(),
         }
     }
@@ -171,7 +176,15 @@ pub async fn read(req: ReadRequest<'_>) -> Result<ReadResult, ReadError> {
 async fn read_inner(req: ReadRequest<'_>) -> Result<ReadResult, ReadError> {
     let started = Instant::now();
     let report = Arc::new(OnceLock::new());
-    let (mut client, connection) = connect(&req, report.clone()).await?;
+    let spec = ConnectSpec {
+        endpoint: &req.endpoint,
+        database: req.database,
+        user: req.user,
+        password: req.password,
+        limits: req.limits,
+        read_only: true,
+    };
+    let (mut client, connection) = connect(&spec, report.clone()).await?;
     // The connection task ends (and the server rolls back) when `client` and this handle drop.
     let connection = AbortOnDrop(tokio::spawn(connection));
 
@@ -186,7 +199,7 @@ async fn read_inner(req: ReadRequest<'_>) -> Result<ReadResult, ReadError> {
     })
 }
 
-struct AbortOnDrop(tokio::task::JoinHandle<Result<(), tokio_postgres::Error>>);
+pub(crate) struct AbortOnDrop(pub(crate) tokio::task::JoinHandle<Result<(), tokio_postgres::Error>>);
 
 impl Drop for AbortOnDrop {
     fn drop(&mut self) {
@@ -194,16 +207,38 @@ impl Drop for AbortOnDrop {
     }
 }
 
-type Connection = tokio_postgres::Connection<Guarded<Box<dyn Stream>>, tokio_postgres::tls::NoTlsStream>;
+pub(crate) type Connection = tokio_postgres::Connection<Guarded<Box<dyn Stream>>, tokio_postgres::tls::NoTlsStream>;
 
-trait Stream: AsyncRead + AsyncWrite + Unpin + Send {}
+pub(crate) trait Stream: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> Stream for T {}
 
-async fn connect(
-    req: &ReadRequest<'_>,
+/// What a connection needs.
+pub(crate) struct ConnectSpec<'a> {
+    pub endpoint: &'a Endpoint,
+    pub database: &'a str,
+    pub user: &'a str,
+    pub password: &'a SecretString,
+    pub limits: Limits,
+    /// Adds `default_transaction_read_only=on` to the startup options.
+    pub read_only: bool,
+}
+
+/// Settings pinned at startup on every connection, because they change how the statement text
+/// and text-format parameters are parsed (M3 review B4). Startup options override role- and
+/// database-level defaults; [`identify`] reads them back and refuses if they didn't take.
+const PINNED_SETTINGS: [(&str, &str, &str); 4] = [
+    // (name in options, value sent, value read back)
+    ("standard_conforming_strings", "on", "on"),
+    ("DateStyle", "ISO,MDY", "ISO, MDY"),
+    ("IntervalStyle", "postgres", "postgres"),
+    ("TimeZone", "UTC", "UTC"),
+];
+
+pub(crate) async fn connect(
+    spec: &ConnectSpec<'_>,
     report: Arc<OnceLock<GuardViolation>>,
 ) -> Result<(Client, Connection), ReadError> {
-    let stream: Box<dyn Stream> = match &req.endpoint {
+    let stream: Box<dyn Stream> = match spec.endpoint {
         #[cfg(unix)]
         Endpoint::Socket(path) => Box::new(
             tokio::net::UnixStream::connect(path)
@@ -224,31 +259,37 @@ async fn connect(
         ),
     };
     // Room for one row up to the byte limit plus protocol overhead.
-    let max_message = u32::try_from(req.limits.max_bytes.saturating_add(64 * 1024)).unwrap_or(u32::MAX);
+    let max_message = u32::try_from(spec.limits.max_bytes.saturating_add(64 * 1024)).unwrap_or(u32::MAX);
     let guarded = Guarded::new(stream, max_message).reporting_to(report.clone());
 
-    let statement_ms = req.limits.statement_timeout.as_millis();
-    let options = format!(
-        "-c statement_timeout={statement_ms} -c lock_timeout=5000 -c idle_in_transaction_session_timeout={} -c default_transaction_read_only=on",
+    let statement_ms = spec.limits.statement_timeout.as_millis();
+    let mut options = format!(
+        "-c statement_timeout={statement_ms} -c lock_timeout=5000 -c idle_in_transaction_session_timeout={}",
         statement_ms + 5000
     );
+    for (name, value, _) in PINNED_SETTINGS {
+        options.push_str(&format!(" -c {name}={value}"));
+    }
+    if spec.read_only {
+        options.push_str(" -c default_transaction_read_only=on");
+    }
     // The driver keeps its own copy of the password; drop the config right after connecting.
     let connected = {
         let mut config = tokio_postgres::Config::new();
         config
-            .user(req.user)
-            .dbname(req.database)
-            .password(req.password.expose_secret())
+            .user(spec.user)
+            .dbname(spec.database)
+            .password(spec.password.expose_secret())
             .options(options)
             .application_name("valetkey");
-        tokio::time::timeout(req.limits.connect_timeout, config.connect_raw(guarded, NoTls)).await
+        tokio::time::timeout(spec.limits.connect_timeout, config.connect_raw(guarded, NoTls)).await
     };
     match connected {
         Ok(Ok(pair)) => Ok(pair),
         Ok(Err(e)) => Err(classify_connect_error(e, &report)),
         Err(_) => Err(ReadError::Connect(format!(
             "connect timed out after {:?}",
-            req.limits.connect_timeout
+            spec.limits.connect_timeout
         ))),
     }
 }
@@ -276,24 +317,9 @@ async fn run(
     let err = |e: tokio_postgres::Error| query_error(e, report);
     let txn = client.build_transaction().read_only(true).start().await.map_err(err)?;
 
-    let identity = txn
-        .query_one(
-            "SELECT pg_catalog.current_database()::text, current_user::text, pg_catalog.current_setting('transaction_read_only'),
-                    pg_catalog.current_setting('max_prepared_transactions')::int",
-            &[],
-        )
-        .await
-        .map_err(err)?;
-    let (database, user, read_only): (String, String, String) = (identity.get(0), identity.get(1), identity.get(2));
-    let max_prepared: i32 = identity.get(3);
-    if database != req.database || user != req.user || read_only != "on" {
-        return Err(ReadError::Identity {
-            got_database: database,
-            got_user: user,
-            want_database: req.database.to_owned(),
-            want_user: req.user.to_owned(),
-        });
-    }
+    let id = identify(&txn, &req.endpoint).await.map_err(err)?;
+    id.check(req.database, req.user, true)?;
+    let (database, user, max_prepared) = (id.database.clone(), id.user.clone(), id.max_prepared);
 
     // M2 finding: `PREPARE TRANSACTION` works inside a read-only transaction, and the prepared
     // transaction (with its locks) outlives the connection.
@@ -385,7 +411,106 @@ async fn run(
 }
 
 /// The serialized JSON length of a value, counted by a writer that discards the bytes.
-fn json_len(v: &Value) -> usize {
+/// What the server says about itself and the session, from inside the transaction.
+#[derive(Debug, Clone)]
+pub(crate) struct Identity {
+    pub database: String,
+    pub user: String,
+    pub read_only: String,
+    pub max_prepared: i32,
+    /// Everything shown in a write request and compared after reconnecting.
+    pub details: BTreeMap<String, String>,
+    pinned: Vec<(&'static str, String)>,
+}
+
+impl Identity {
+    /// The approved database and user, the expected read-only state, and the pinned settings.
+    pub fn check(&self, database: &str, user: &str, read_only: bool) -> Result<(), ReadError> {
+        let want_ro = if read_only { "on" } else { "off" };
+        if self.database != database || self.user != user || self.read_only != want_ro {
+            return Err(ReadError::Identity {
+                got_database: self.database.clone(),
+                got_user: self.user.clone(),
+                want_database: database.to_owned(),
+                want_user: user.to_owned(),
+            });
+        }
+        for ((name, _, want), (_, got)) in PINNED_SETTINGS.iter().zip(&self.pinned) {
+            if got != want {
+                return Err(ReadError::Refused(format!(
+                    "the session setting {name} is {} instead of {want}; valetkey pins it so statements and parameters parse as shown",
+                    for_display(got)
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The broker's identity query (schema-qualified, so a hostile `search_path` can't fake it). Run
+/// first inside the transaction: it takes the snapshot that locks a read-only transaction.
+pub(crate) async fn identify(txn: &Transaction<'_>, endpoint: &Endpoint) -> Result<Identity, tokio_postgres::Error> {
+    let row = txn
+        .query_one(
+            "SELECT pg_catalog.current_database()::text, current_user::text,
+                    pg_catalog.current_setting('transaction_read_only'),
+                    pg_catalog.current_setting('max_prepared_transactions')::int,
+                    pg_catalog.current_setting('search_path'),
+                    pg_catalog.current_schemas(true)::text,
+                    pg_catalog.inet_server_addr()::text,
+                    pg_catalog.inet_server_port(),
+                    pg_catalog.current_setting('server_version'),
+                    pg_catalog.current_setting('standard_conforming_strings'),
+                    pg_catalog.current_setting('DateStyle'),
+                    pg_catalog.current_setting('IntervalStyle'),
+                    pg_catalog.current_setting('TimeZone')",
+            &[],
+        )
+        .await?;
+    let database: String = row.get(0);
+    let user: String = row.get(1);
+    let server_addr: Option<String> = row.get(6);
+    let server_port: Option<i32> = row.get(7);
+    let pinned: Vec<(&'static str, String)> = PINNED_SETTINGS
+        .iter()
+        .enumerate()
+        .map(|(i, (name, _, _))| (*name, row.get::<_, String>(9 + i)))
+        .collect();
+    let endpoint = match endpoint {
+        Endpoint::Socket(p) => format!("socket {}", p.display()),
+        Endpoint::Tcp { host, port } => format!("tcp {host}:{port}"),
+    };
+    let mut details = BTreeMap::from([
+        ("database".to_owned(), database.clone()),
+        ("user".to_owned(), user.clone()),
+        ("endpoint".to_owned(), endpoint),
+        // Null over unix sockets; compared including null-ness.
+        (
+            "server_addr".to_owned(),
+            server_addr.unwrap_or_else(|| "(none: unix socket)".into()),
+        ),
+        (
+            "server_port".to_owned(),
+            server_port.map_or_else(|| "(none: unix socket)".into(), |p| p.to_string()),
+        ),
+        ("server_version".to_owned(), row.get(8)),
+        ("search_path".to_owned(), row.get(4)),
+        ("schemas".to_owned(), row.get(5)),
+    ]);
+    for (name, value) in &pinned {
+        details.insert(format!("setting {name}"), value.clone());
+    }
+    Ok(Identity {
+        database,
+        user,
+        read_only: row.get(2),
+        max_prepared: row.get(3),
+        details,
+        pinned,
+    })
+}
+
+pub(crate) fn json_len(v: &Value) -> usize {
     struct Count(usize);
     impl std::io::Write for Count {
         fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
@@ -401,7 +526,7 @@ fn json_len(v: &Value) -> usize {
     c.0
 }
 
-fn query_error(e: tokio_postgres::Error, report: &OnceLock<GuardViolation>) -> ReadError {
+pub(crate) fn query_error(e: tokio_postgres::Error, report: &OnceLock<GuardViolation>) -> ReadError {
     if let Some(v) = report.get() {
         return ReadError::Guard(v.clone());
     }

@@ -9,6 +9,7 @@ deleted.
 - [[exposed-tcp-targets-skip-checks]]: the Postgres checks are skipped for exposed TCP targets
 - [[doctor-shows-role-closure]]: humans can't see a target's effective read scope
 - [[testcontainers-port-flake]]: an intermittent test-container failure with unknown cause
+- [[broker-env-not-scrubbed]]: the broker keeps its inherited environment (paid down in M3b)
 
 ## Paid down
 

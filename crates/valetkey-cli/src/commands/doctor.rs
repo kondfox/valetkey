@@ -41,6 +41,7 @@ pub(crate) fn run() -> anyhow::Result<ExitCode> {
 
     let root = crate::resolve_root()?;
     check_root(&root, &mut o);
+    check_writes(&root, &mut o);
 
     let project = match project::discover(&std::env::current_dir()?) {
         Ok(p) => p,
@@ -199,6 +200,50 @@ fn check_root(root: &ValetkeyRoot, o: &mut Outcome) {
         ));
     }
 }
+
+/// The audit log and the write-approval stores (§6.7, §6.10). Reads still run when the audit can't
+/// be written (with a warning in `mcp.log`), so this is where a human finds out.
+fn check_writes(root: &ValetkeyRoot, o: &mut Outcome) {
+    for d in [root.audit_dir(), root.pending_dir(), root.write_approvals_dir()] {
+        if let Err(problem) = check_private(&d) {
+            o.fail(problem);
+        }
+    }
+    let audit = root.audit_dir();
+    if audit.exists() {
+        match tempfile::Builder::new().prefix(".probe-").tempfile_in(&audit) {
+            Ok(_) => {}
+            Err(e) => o.fail(format!(
+                "the audit log {} can't be written ({e}); writes are refused and reads go unaudited",
+                audit.display()
+            )),
+        }
+        let total: u64 = valetkey_core::audit::files(root)
+            .iter()
+            .filter_map(|(_, _, p)| std::fs::symlink_metadata(p).ok())
+            .map(|m| m.len())
+            .sum();
+        if total > AUDIT_SIZE_WARNING {
+            output::warn(format!(
+                "the audit log in {} is {} MiB; archive or remove old months (valetkey never stops auditing on its own)",
+                audit.display(),
+                total / (1024 * 1024)
+            ));
+        }
+    }
+    if let Ok(pending) = valetkey_core::write_store::list(root)
+        && !pending.is_empty()
+    {
+        output::warn(format!(
+            "{} write request(s) pending; review them with: {} approve",
+            pending.len(),
+            output::self_path()
+        ));
+    }
+}
+
+/// `doctor` warns when the audit log grows past this.
+const AUDIT_SIZE_WARNING: u64 = 1024 * 1024 * 1024;
 
 fn exit(o: &Outcome) -> ExitCode {
     if o.failed { ExitCode::FAILURE } else { ExitCode::SUCCESS }

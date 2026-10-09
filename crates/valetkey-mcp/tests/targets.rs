@@ -126,6 +126,7 @@ async fn call_with(f: &Fixture, env_dir: Option<&Path>, roots: Roots) -> Value {
         env_project_dir: env_dir.map(Path::to_owned),
         self_path: PathBuf::from("/opt/valetkey/bin/valetkey"),
         roots_timeout: Duration::from_millis(300),
+        approval_timeout: valetkey_mcp::writes::APPROVAL_TIMEOUT,
     });
     let (server_io, client_io) = tokio::io::duplex(64 * 1024);
     let server = tokio::spawn(async move { broker.serve(server_io).await.unwrap().waiting().await });
@@ -134,7 +135,7 @@ async fn call_with(f: &Fixture, env_dir: Option<&Path>, roots: Roots) -> Value {
     let tools = client.list_all_tools().await.unwrap();
     let mut names: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
     names.sort_unstable();
-    assert_eq!(names, ["sql_describe", "sql_query", "valetkey_targets"]);
+    assert_eq!(names, ["sql_describe", "sql_execute", "sql_query", "valetkey_targets"]);
 
     let result = client
         .call_tool(CallToolRequestParams::new("valetkey_targets"))
@@ -176,7 +177,9 @@ async fn approved_project_lists_its_targets() {
     assert_eq!(targets[1]["secret_exposure"], "protected");
     // The exposed target is usable; the protected one waits for fence detection (M4).
     assert_eq!(targets[0]["available"], true);
-    assert_eq!(targets[0]["tools"], json!(["sql_query", "sql_describe"]));
+    // It's writable, so it offers sql_execute, and says writes wait for `valetkey approve`.
+    assert_eq!(targets[0]["tools"], json!(["sql_query", "sql_describe", "sql_execute"]));
+    assert!(targets[0]["writes"].as_str().unwrap().contains("valetkey approve"), "{r}");
     assert_eq!(targets[1]["available"], false);
     assert!(
         targets[1]["reason"]

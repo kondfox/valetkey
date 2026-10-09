@@ -18,6 +18,8 @@ valetkey-mcp.workspace = true
 valetkey-postgres.workspace = true
 valetkey-secrets.workspace = true
 anyhow.workspace = true
+chrono = { workspace = true, features = ["now"] }
+tempfile.workspace = true
 clap.workspace = true
 rpassword.workspace = true
 secrecy.workspace = true
@@ -28,6 +30,9 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 which.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true, features = ["term"] }
 
 [dev-dependencies]
 secrecy.workspace = true

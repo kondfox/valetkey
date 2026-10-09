@@ -79,3 +79,12 @@ Terms as valetkey uses them. Spec references point into `docs/design.md`.
 - **`VALETKEY_DEV_ROOT`:** overrides the valetkey root in **debug builds only**, for tests.
   [[2026-10-04-dev-root-only-in-debug-builds]]
 - **`valetkey.toml`:** the project's committed, non-secret target and policy config. §2.3
+- **Pending request:** a write `sql_execute` wants to run, stored in `~/.valetkey/pending/<id>.json`
+  until a human decides it. Its hash binds everything that will execute and where. [[sql-execute]]
+- **Decision (write approval):** `~/.valetkey/write-approvals/<id>.json`, written by `valetkey
+  approve`. It holds the hash of the request as the human saw it, plus approve or deny.
+  [[valetkey-approve]]
+- **Orphaned request:** a pending request whose broker is gone (no process holds its lock). It can
+  never run; `approve` refuses it and removes it. [[valetkey-approve]]
+- **Pinned settings:** the Postgres session settings valetkey sets at startup on every connection,
+  because they change how statements and parameters parse. [[sql-tools]]

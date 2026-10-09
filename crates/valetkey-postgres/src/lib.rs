@@ -1,10 +1,11 @@
-//! The Postgres adapter (§6.9). M1 implements only the target's config: its schema, validation and
-//! canonical form. The driver, the read path and the guards arrive in M2.
+//! The Postgres adapter (§6.9): the target's config (schema, validation, canonical form), the
+//! connection guard, the read path ([`read`]) and the write path ([`write`]).
 
 pub mod checks;
 pub mod guard;
 pub mod read;
 pub mod values;
+pub mod write;
 
 use schemars::JsonSchema;
 use serde::Deserialize;
