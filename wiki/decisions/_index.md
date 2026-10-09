@@ -29,6 +29,7 @@ to *Superseded* and links to its successor.
 - [[2026-10-04-dev-root-only-in-debug-builds]]: `VALETKEY_DEV_ROOT` exists only in debug builds
 - [[2026-10-04-toolchain-and-msrv]]: Rust 1.99.0 pinned, MSRV 1.88
 - [[2026-10-05-m2-scope]]: two PRs; TLS in M3; protected targets unfenced until M4
+- [[2026-10-09-m3-scope]]: two PRs; every write approved; the pre-M4 approval gap accepted
 
 ## Superseded
 

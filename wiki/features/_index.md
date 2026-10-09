@@ -11,3 +11,6 @@ Each page gives what it does, its rules, and its entry point (`file:line`).
 - [[valetkey-secret]]: manage `local://` secrets
 - [[secret-sources]]: how each `<scheme>://` secret is fetched
 - [[sql-tools]]: `sql_query` and `sql_describe`
+- [[sql-execute]]: `sql_execute`, writes a human approves out of band
+- [[valetkey-approve]]: a human approves or denies one pending write
+- [[audit-log]]: the audit log of SQL calls, and `valetkey log`

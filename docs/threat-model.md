@@ -1,6 +1,6 @@
 # valetkey threat model
 
-Status: updated with M0 results (2026-10-04). See [design.md](design.md) for the mechanisms referenced here.
+Status: updated with M0 results (2026-10-04) and the M3 write path (2026-10-09). See [design.md](design.md) for the mechanisms referenced here.
 
 ## Assets
 
@@ -63,8 +63,10 @@ valetkey release, the agent client itself being compromised.
 | A11c | Leave a prepared transaction behind (`PREPARE TRANSACTION` works in a read-only transaction; verified in M2) | Servers with `max_prepared_transactions > 0` are refused |
 | A12 | Write without consent (`allow_write: true` is set by the agent) | `writable` target flag plus out-of-band human approval (`valetkey approve` in a terminal). Skipped only for targets the agent could reach without valetkey anyway. |
 | A12b | Mislead the human in the approval prompt (a long statement whose tail is hidden, a persuasive "reason") | The broker builds the whole prompt: verified identity, full statement or a marked truncation plus hash, no agent free text. Timeout means deny. |
-| A12c | Auto-approve through the client: an `Elicitation` hook accepting the request, or an `ElicitationResult` hook rewriting the human's answer (both work, M0) | Elicitation is display-only. Approval is a file in `~/.valetkey/write-approvals/`, bound by hash to one exact request (project-key, target, identity, statement, parameters, nonce, expiry), which the agent can't write from its shell or file tools, and settings that could add hooks are write-protected. |
-| A12d | Flood the human with pending write requests until one gets approved by mistake | One outstanding request per target per session; `approve` shows project, target, session and age, and confirms one ID at a time |
+| A12c | Auto-approve through the client: an `Elicitation` hook accepting the request, or an `ElicitationResult` hook rewriting the human's answer (both work, M0) | Elicitation is display-only. Approval is a file in `~/.valetkey/write-approvals/`, bound by hash to one exact request (project-key, target, identity, statement, parameters, nonce, expiry), which the agent can't write from its shell or file tools (**from M4**, when the fence rows exist), and settings that could add hooks are write-protected. |
+| A12d | Flood the human with pending write requests until one gets approved by mistake | One outstanding request per target per session, reserved before anything else runs so concurrent calls can't slip past; `approve` shows project, target, session and age, and confirms one ID at a time |
+| A12e | Change what the approved text means between approval and execution: role- or database-level `standard_conforming_strings`, `DateStyle` or `TimeZone` (changes where literals end or what a parameter means), a `search_path` or schema change, a different server behind the same name, an `allow` during the wait | Parsing settings pinned at startup on every connection and read back; the identity (endpoint, server address, version, `search_path`, schemas, settings) and the parameter types (by OID) are hashed into the request and must be equal after reconnecting; session and policy run again after approval |
+| A12f | Get a write executed after the agent was told it failed (cancel the call, then approval arrives late), or commit only part of an approved statement | A cancelled or disconnected call withdraws its request; approved writes run as a whole (no row-limited portal) and always get an outcome record; orphaned requests are refused by `approve` |
 | A13 | Exhaust memory or hold locks | Streamed row cap, byte cap, `statement_timeout`, `lock_timeout`, `idle_in_transaction_session_timeout` |
 | A13b | Exhaust broker memory with one huge value (the driver buffers whole messages) | The connection guard refuses any backend message over `max_bytes + 64 KiB` from its header; the portal limits rows; the byte limit drops the connection instead of draining |
 | A14 | Extract a secret from error messages or logs | `SecretString` everywhere; stderr redacted and capped; secrets never logged or audited |
@@ -74,7 +76,7 @@ valetkey release, the agent client itself being compromised.
 | A17 | Hang the broker through an interactive CLI prompt | Non-interactive flags, timeouts, kill on drop |
 | A17b | Make a vendor CLI misbehave from the broker: an injected env var, a planted `gcloud` or Python on `PATH`, a hanging or output-flooding child, a grandchild that outlives the call | Fixed environment (nothing inherited), tool and interpreter paths only from human-approved `setup` (trust-checked; shims refused), gcloud's config dir and properties file checked strictly (an agent-writable one could redirect the human's token), argv only, stdin closed, timeout and drop kill the whole process group, stdout over its cap kills the process (no truncated secrets) |
 | A17c | Reuse a cached secret after the approval changed, or skip policy through the cache | The cache key includes the config hash; the broker checks policy before every cache lookup; failures aren't cached |
-| A18 | Tamper with the audit log | Audit and log dirs write-denied (OS and permission rules) |
+| A18 | Tamper with the audit log, or read other projects' statements in it | Audit and log dirs write-denied (OS and permission rules); the audit and pending dirs deny-read (**from M4**). Files roll over instead of stopping, so padded calls can't switch auditing off |
 | A19 | Plant code that a human's credentialed terminal runs later (git hooks including `core.hooksPath`/husky, `.git/config`, worktree and submodule git dirs, `.envrc`, mise, venv `activate`, VS Code tasks, the valetkey Homebrew tap) | Resolved and detected paths write-denied (OS and permission rules); the sandbox write scope is limited to the project and temp. The rest of the class is a residual risk, below. |
 | A19b | Plant a fake `valetkey` earlier on the human's `PATH`, so `install` copies it into the protected dir | Only the installed copy installs new binaries (`<installed>/valetkey install --from`), after a signature check; hints always use the absolute path; first install is trust-on-first-use |
 | A19c | Swap `valetkey.toml` between the human reading the `allow` diff and confirming | `allow` stores exactly the config it displayed and never re-reads |
@@ -122,3 +124,10 @@ valetkey release, the agent client itself being compromised.
 - **Data exposure.** Query results reach the agent by design, and a read can see everything **any role in the login role's closure** can read: one statement can switch roles. Limit what each target's role can
   see.
 - **Native Windows** has no sandbox. Deployed targets require WSL2.
+- **Unaudited reads on a full disk.** A read whose audit record can't be written still runs, with
+  a warning in the broker's log, and `doctor` reports it. The agent can usually fill the volume
+  that holds `~/.valetkey/` from its own write scope (the project, the temp dir), and then reads go
+  unaudited until a human frees space. Writes never run unaudited.
+- **Before M4** (fence generation), write approvals, pending requests and the audit log are
+  agent-writable or agent-readable: the deny rows that protect them (design §6.5) don't exist yet.
+  Writes are only safe to use once M4 lands (maintainer decision, 2026-10-09).

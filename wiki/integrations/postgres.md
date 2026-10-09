@@ -92,6 +92,32 @@ function (plpython3u, plperlu, C, `internal` wrapper, privileged plpgsql definer
 pgcrypto function. Without pgcrypto on the list it flags pgcrypto's 36 C functions. Query C flagged
 `lo_export` and `pg_read_file` for the roles they'd been granted to, and nothing for others.
 
+## Write path (M3, 2026-10-09, postgres:17, `tests/write.rs`)
+
+- **Transaction control inside the statement.**
+  - `COMMIT`, `ROLLBACK` and `COMMIT AND CHAIN` succeed inside the broker's explicit transaction
+    and end it. The broker's own `COMMIT` then only warns.
+  - `DO $$ … COMMIT … $$` and `CALL` of a procedure that commits fail ("invalid transaction
+    termination") inside a transaction block.
+  - `COPY … FROM STDIN` and `COPY … TO STDOUT` fail cleanly through `query_raw` without hanging.
+    So do `VACUUM`, `CREATE INDEX CONCURRENTLY` and `PREPARE TRANSACTION` (with
+    `max_prepared_transactions = 0`).
+- **Startup options override role settings.** With `ALTER ROLE … SET standard_conforming_strings =
+  off`, `DateStyle = 'SQL, DMY'`, `TimeZone = 'Asia/Tokyo'` and `IntervalStyle = 'sql_standard'`,
+  the `-c` options sent at startup won: `'a\'` stayed a literal backslash, and `01/02/2026` parsed
+  as January 2.
+- **Row-limited portals run a writing `SELECT` only partway.** With `Execute(n)`, only the first
+  rows' function calls happen (`a_row_limited_portal_runs_a_writing_select_only_partway`: 5 of 15
+  calls). Writes therefore use `query_raw` (no limit), and `rows_affected`
+  comes from `CommandComplete` (`tokio-postgres` 0.7.18 sets it only there, `src/query.rs:354-357`).
+  The client's response channel has capacity 1 (`src/client.rs:97`), so an unlimited stream keeps
+  backpressure.
+- **`COMMIT` can outlast the client's wait.** A deferred constraint trigger made `COMMIT` take 3 s;
+  valetkey stopped waiting after 1 s (unknown outcome), and the server committed anyway. That's why
+  a timeout during `COMMIT` is reported as `unknown`.
+- **A role-level `search_path` change** between two logins changes both `search_path` and
+  `current_schemas(true)`. The write path compares both.
+
 ## Driver details (M2, `crates/valetkey-postgres/src/`)
 
 - `guard.rs` wraps the socket. During authentication it allows only codes 0, 10, 11 and 12

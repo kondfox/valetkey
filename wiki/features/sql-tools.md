@@ -43,6 +43,16 @@ The whole call also has a wall-clock limit.
 Postgres's own error messages about the agent's statement are passed through. Everything else is
 fixed text.
 
+**Input limits** (every SQL tool, M3): a statement can be at most 64 KiB, and there can be at most
+100 parameters, each at most 4 KiB, 64 KiB in total.
+
+**Session settings** (M3): every connection pins `standard_conforming_strings=on`,
+`DateStyle=ISO,MDY`, `IntervalStyle=postgres` and `TimeZone=UTC` at startup, overriding role and
+database defaults, and the identity query reads them back. A role-level `standard_conforming_strings
+= off` would otherwise change where string literals end.
+
+**Audit** (M3): every call is recorded in the [[audit-log]], refusals included.
+
 **Logging:** `mcp.log` gets the tool, target, a statement hash, the row count, the duration and the
 outcome. Never statement text, parameters or secrets (tested with the production filter).
 

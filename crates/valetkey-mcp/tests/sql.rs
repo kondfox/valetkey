@@ -184,6 +184,7 @@ fn broker(e: &Env) -> Broker {
         env_project_dir: Some(e.project.clone()),
         self_path: PathBuf::from("/opt/valetkey/bin/valetkey"),
         roots_timeout: Duration::from_secs(2),
+        approval_timeout: valetkey_mcp::writes::APPROVAL_TIMEOUT,
     })
 }
 

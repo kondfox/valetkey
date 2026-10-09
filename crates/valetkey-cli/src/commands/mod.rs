@@ -1,6 +1,8 @@
 pub(crate) mod allow;
+pub(crate) mod approve;
 pub(crate) mod doctor;
 pub(crate) mod init;
+pub(crate) mod log;
 pub(crate) mod mcp;
 pub(crate) mod schema;
 pub(crate) mod secret;

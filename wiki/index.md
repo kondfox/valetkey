@@ -4,9 +4,9 @@ The LLM-maintained knowledge base for valetkey: the *why* behind the design, ver
 the systems we depend on, and what we learn while building. The schema and maintenance rules are
 in [[CLAUDE]].
 
-**Status (2026-10-08):** M0, M1 and M2a are merged; M2b (Postgres read path, `sql_query`,
-`sql_describe`) is in PR #3. Next: M3, writes with out-of-band approval, the audit log and TLS
-(`docs/design.md §10`). Current status and working rules: `AGENTS.md`.
+**Status (2026-10-09):** M0, M1 and M2 are merged. M3a (`sql_execute`, `valetkey approve`, the
+audit log) is in review; M3b (verified TLS) follows ([[2026-10-09-m3-scope]]). Current status and
+working rules: `AGENTS.md`.
 
 ## Start here
 

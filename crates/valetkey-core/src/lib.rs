@@ -10,9 +10,13 @@
 //! - [`safe_read`]: reading agent-writable files without following links.
 //! - [`secret_source`]: the interface every secret source implements.
 //! - [`user_config`]: `~/.valetkey/config.toml`, the human-approved tool paths.
+//! - [`write_request`]: a write a human approves out of band, its hash and its rendering.
+//! - [`write_store`]: the pending-request and decision files behind `valetkey approve`.
+//! - [`audit`]: the audit log.
 //!
 //! The spec is `docs/design.md` in the repository; section numbers in comments refer to it.
 
+pub mod audit;
 pub mod config;
 pub mod diff;
 pub mod paths;
@@ -25,6 +29,8 @@ pub mod secret_ref;
 pub mod secret_source;
 pub mod snapshot;
 pub mod user_config;
+pub mod write_request;
+pub mod write_store;
 
 pub use config::{NormalizeCx, NormalizedTarget, ProjectConfig, Registry, TargetId, TargetKind};
 pub use paths::ValetkeyRoot;

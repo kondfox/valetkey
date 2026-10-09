@@ -144,7 +144,7 @@ Every result carries metadata: the target, the **verified identity** of the far 
 
 ```
 valetkey status            targets, fence state, approval state
-valetkey approve [ID]      review and approve a pending write (no ID: list pending ones) (§6.10)
+valetkey approve [ID]      review and approve a pending write (no ID: list pending ones; --full for long ones) (§6.10)
 valetkey setup             record which vendor CLIs (gcloud) the broker may run (§6.8)
 valetkey secret set ID     store a secret in valetkey's local store, `local://` (§6.0); also `rm`, `ls`
 valetkey log [--follow]    audit log of tool calls
@@ -492,6 +492,7 @@ So every protected path gets **both** an OS rule and a permission rule. `generat
 | Every credential location a used `SecretSource` resolves (below), and `~/.ssh` | deny-read | deny `Read` and `Edit` |
 | The whole valetkey root `~/.valetkey/` (binary, project snapshots, pending requests, write approvals, sockets, secrets, audit, logs, user config). Denying the root dir, not individual entries, also protects symlinks on both platforms (M0) | deny-write | deny `Edit` |
 | `~/.valetkey/secrets/` | deny-read | deny `Read` and `Edit` |
+| `~/.valetkey/audit/` and `~/.valetkey/pending/`: statement text and parameters from every project (M3) | deny-read | deny `Read` and `Edit` |
 | `~/.valetkey/sockets/` | deny unix-socket connect | — |
 | Agent config that can define hooks, MCP servers, permission modes or allowed tools (M0 list): `.claude/settings*.json`, `.claude/hooks/**`, `.claude/skills/**`, `.claude/agents/**`, `.claude/commands/**`, `.mcp.json`, `~/.claude.json`, and in `~/.claude/`: `settings*.json`, `hooks/**`, `skills/**`, `agents/**`, `commands/**`, `plugins/**` | deny-write | deny `Edit` |
 | Git: the **resolved** git dir's `config` and `config.worktree`, and the **effective** hooks path (`git rev-parse --git-dir --git-path hooks`; covers worktrees, submodules, and `core.hooksPath` such as husky's `.husky/`) | deny-write | deny `Edit` |
@@ -619,8 +620,16 @@ runs it on macOS and Linux runners, where the agent isn't present.
    cleared when the snapshot changes, no retries.
 5. Execute through the adapter under limits.
 6. Serialize typed values: bigint/numeric as strings, bytea as base64, timestamps as RFC 3339.
-7. Append an audit record: time, client, target, tool, statement text and hash, rows, outcome,
-   approver. Never a secret.
+7. Append an audit record: time, client, project, target, tool, statement text and hash,
+   parameters (as sent), rows or rows affected, outcome, approval (id, request hash, time,
+   terminal). Never a secret. JSON lines in `~/.valetkey/audit/<YYYY-MM>.<N>.jsonl`, one write per
+   record under a file lock; a file rolls over past 64 MiB and auditing never stops on its own.
+   A write gets an `approved` record before it executes and an outcome record after; an `approved`
+   record without an outcome means the outcome is unknown. A write whose `approved` record can't be
+   written doesn't run; a read that can't be audited still runs, with a warning in the log, and
+   `doctor` reports it. Every SQL tool caps the statement at 64 KiB and parameters at 100, 4 KiB
+   each and 64 KiB in total; a call refused for its size is recorded with only the statement's
+   hash, length and first KiB.
 
 ### 6.8 Broker environment and process runner
 
@@ -674,7 +683,11 @@ Every guard below was tested against real Postgres 15–18 in M0, including each
 - `connect_raw` skips `tokio-postgres`'s own connect timeout and multi-host logic, so the broker
   applies its own timeout.
 - Startup parameters: `statement_timeout`, `lock_timeout`, `idle_in_transaction_session_timeout`,
-  and `default_transaction_read_only=on` for reads.
+  and `default_transaction_read_only=on` for reads. Every connection also pins the settings that
+  change how a statement or a text parameter parses: `standard_conforming_strings=on`,
+  `DateStyle=ISO,MDY`, `IntervalStyle=postgres`, `TimeZone=UTC`. Startup options override role-
+  and database-level defaults (an ordinary role can `ALTER ROLE` its own); the identity query reads
+  them back and refuses if they didn't take (M3).
 
 **Reads.**
 - `BEGIN READ ONLY`, then the broker's own identity check (`current_database()`, `current_user`,
@@ -756,6 +769,18 @@ risk.
 
 ### 6.10 Write approval prompt
 
+**Writes** (M3, `sql_execute`): a read-only connection first identifies the server (database, user,
+endpoint, server address, port and version, `search_path`, the resolved schemas, the pinned
+settings), runs the same refusals and checks as reads, and `prepare`s the statement, which yields
+the server-inferred parameter types; it's rolled back. After approval, a new connection runs
+`START TRANSACTION READ WRITE`, requires every identity detail and every parameter type (by OID) to
+equal the approved ones, executes the one statement **without a row limit**, so it always runs to
+completion (a row-limited portal would run a writing `SELECT` only partway and commit that part),
+keeps the result rows that fit the limits, and commits. A single result message over the
+connection guard's cap cuts the connection, which rolls the write back. The call's time limit
+covers everything **before** `COMMIT`; `COMMIT` has its own bound (`statement_timeout` + 10 s), and
+a connection lost or no answer during `COMMIT` is reported as an unknown outcome, never as an error.
+
 Per-call approval is skipped only for targets that are **agent-usable without valetkey**: the
 secret is exposed **and** the channel is plain TCP to a host the sandbox's network rules let the
 agent reach. In that case a prompt protects nothing and only trains people to click through, so
@@ -782,12 +807,23 @@ SDK hosts can't even be detected. So:
    or not, never approves anything.
 3. In a normal terminal, a human runs `valetkey approve <id>`, or `valetkey approve` to list pending
    requests with their project, target, session and age. It shows one rendered request and asks
-   for confirmation of **that ID only**; one confirmation never approves more than one request. On
-   yes it writes `~/.valetkey/write-approvals/<id>` containing the request hash.
-4. The broker waits for that file, checks the hash, the nonce and the expiry, executes, and deletes
-   both files. It denies on timeout (default 5 minutes), a mismatch, an expired or already-used
-   nonce, or any error. A leftover approval file (after a crash) can't authorize anything else,
-   because nothing else has its hash and nonce.
+   for confirmation of **that ID only**: the human types the request id; `n` denies. One
+   confirmation never approves more than one request, and there is no non-interactive mode. It
+   writes `~/.valetkey/write-approvals/<id>` (never replacing one) containing the hash of the
+   request **as it was shown**, and on `n` a denial, so the broker stops waiting at once.
+4. The broker waits for that file, checks the hash against the request **it holds in memory** (it
+   never re-reads the pending file to decide what to run), the nonce and the deadline, deletes both
+   files, runs session and policy again (the human may have run `allow` meanwhile: same approved
+   config, same project, still writable, same exposure), writes the `approved` audit record and
+   executes. It denies on timeout (default 5 minutes), a mismatch, an expired or already-used
+   nonce, a policy change, or any error. A leftover approval file (after a crash) can't authorize
+   anything else, because nothing else has its hash and nonce.
+5. The wait also ends when the client cancels the call or disconnects: the request is withdrawn.
+   (`rmcp` only signals a cancellation; it doesn't drop the handler, so the broker watches for it.)
+   Once approved, the write runs in a task that cancellation can't cut off, and the broker waits
+   for it before exiting, so it always gets an outcome record. While waiting, the broker holds a
+   lock on its pending file; `approve` refuses (and removes) a request nobody holds, an orphan left
+   by a killed client.
 
 Flooding: a session may have only one outstanding request per target. Further write calls are
 refused until it's approved, denied or expired, so the agent can't bury the human in prompts.
@@ -812,7 +848,16 @@ The human approves exactly what the prompt shows, so the agent mustn't be able t
   characters are escaped visibly, and non-ASCII identifiers are flagged. The `allow` diff uses
   the same rules.
 - The prompt contains no free text from the agent (no "reason" field).
-- A statement too long to show in full is marked as truncated, and its hash is shown.
+- The statement and parameters are drawn in a numbered gutter between fixed delimiters, hard-wrapped
+  at 72 columns with a continuation gutter, so text inside the statement can't imitate the prompt's
+  own lines, and a terminal never soft-wraps it back to column 0. Long runs of whitespace and of
+  blank lines collapse into visible markers.
+  Parameters are shown as the exact text sent, with their types, and SQL `NULL` distinct from
+  `'null'`. A broker-built summary (target, identity, sizes, hash, expiry) sits right above the
+  confirmation prompt.
+- A statement or parameter too long to show in full (over 8 KiB or 200 lines, counted inside lines
+  too; a parameter over 256 characters) is marked as truncated, and its hash is shown; approving it
+  needs `approve <id> --full`.
 - Timeout, cancellation or an error counts as a denial.
 - The rendered request is fixed once it's written. The terminal shows exactly what the broker will
   execute.
@@ -894,8 +939,8 @@ same targets, without changing adapters: they only see a socket path.
 | M0 | Spike, no product code | **Done 2026-10-04.** Results in the wiki: `wiki/integrations/` pages and `wiki/decisions/2026-10-04-m0-go-no-go.md` |
 | M1 | Skeleton | **Done 2026-10-04.** Workspace (`valetkey-core`, `-postgres` config only, `-mcp`, `-cli`), CI, config + schema, basic `init`/`allow`/`doctor`, MCP server with `valetkey_targets`. Crates appear with the milestone that needs them. `install` (copy + register) moves to M5 |
 | M2 | Postgres read path | Two PRs. **M2a:** `valetkey-secrets` (process runner; `env-file`, `local`, `keyring`, `gcp-sm`; single-flight cache), `setup`, `secret`. **M2b:** auth guard, message-size cap, portal reads, role-closure and catalog checks, `sql_query`, `sql_describe`, guard integration tests. Protected targets stay refused unless `require_fence = false` until M4 |
-| M3 | Write path and TLS | `sql_execute`, `valetkey approve` (out-of-band approval), audit log; verified TLS for remote targets (moved from M2) |
-| M4 | Fence | Claude Code profile: generate, detect, probe; unfenced mode; fence CI on macOS and Linux |
+| M3 | Write path and TLS | Two PRs. **M3a:** `sql_execute`, `valetkey approve` (out-of-band approval), audit log, `valetkey log`. **M3b:** verified TLS for remote targets (moved from M2). Until M4 every write needs approval, and the approval store isn't fenced from the agent yet (`wiki/decisions/2026-10-09-m3-scope.md`) |
+| M4 | Fence | Claude Code profile: generate, detect, probe; unfenced mode; fence CI on macOS and Linux. Closes M3's pre-M4 gap: the deny rows for approvals, pending requests and the audit log |
 | M5 | v0.1 release | `dist` pipeline, installers, Homebrew tap, `install`, `self-update`, plugin |
 | M6 | Pilot | first real project adopts valetkey; its targets and fence checks become the acceptance test |
 | M7+ | Roadmap | `http` adapter, `aws-sm`/`azure-kv`/`op` sources, MySQL/MS SQL, Redis/Mongo, `valetkey up` |

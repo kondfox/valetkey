@@ -1,7 +1,7 @@
 //! The broker: valetkey's MCP stdio server (§1, §6.7).
 //!
-//! Tools: `valetkey_targets`, `sql_query`, `sql_describe`. Every tool goes through the same steps
-//! (§6.7), and a later step never runs if an earlier one refuses:
+//! Tools: `valetkey_targets`, `sql_query`, `sql_describe`, `sql_execute`. Every tool goes through
+//! the same steps (§6.7), and a later step never runs if an earlier one refuses:
 //! 1. **session** ([`session`]): the client's project dir, cross-checked against its MCP roots;
 //!    the project; its approved snapshot, served only while the working `valetkey.toml` matches
 //! 2. **policy** ([`policy`]): the target exists in the snapshot with the right kind; exposure is
@@ -9,13 +9,17 @@
 //!    fence (none before M4, so only with `require_fence = false`)
 //! 3. **secret**: only now, through the single-flight cache (policy always runs first, so a cache
 //!    hit can't skip it)
-//! 4. **adapter**: the Postgres read path ([`valetkey_postgres::read`])
+//! 4. **approval**, for writes: out of band, with `valetkey approve` in a terminal ([`writes`])
+//! 5. **adapter**: the Postgres read or write path ([`valetkey_postgres`])
+//! 6. **audit**: one record per SQL call in `~/.valetkey/audit/` ([`valetkey_core::audit`])
 //!
 //! Nothing here writes to stdout except the MCP transport. The log (agent-readable) never gets
-//! statement text, parameters or secrets.
+//! statement text, parameters or secrets; the audit log does, and is deny-read from M4.
 
+mod audit;
 pub mod policy;
 pub mod session;
+pub mod writes;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -24,23 +28,33 @@ use std::time::Duration;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig};
+use rmcp::service::RequestContext;
 use rmcp::{
     ErrorData as McpError, Peer, RoleServer, ServerHandler, ServiceExt, schemars, tool, tool_handler, tool_router,
 };
+use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
+use valetkey_core::audit::Outcome;
 use valetkey_core::user_config::UserConfig;
+use valetkey_core::write_request::{MAX_PARAM_BYTES, MAX_PARAMS, MAX_PARAMS_TOTAL_BYTES, MAX_STATEMENT_BYTES};
 use valetkey_core::{Exposure, Platform, Registry, ValetkeyRoot};
 use valetkey_postgres::read::{ReadRequest, read};
 use valetkey_secrets::cache::{CacheKey, SecretCache};
 
 use crate::policy::{Usable, evaluate};
 use crate::session::{Session, resolve};
+use crate::writes::{SqlExecuteArgs, WriteState};
 
 /// The broker's log filter. `rmcp` logs whole requests, tool arguments included, at DEBUG; the
 /// log is agent-readable and must never contain statement text or parameters, so `rmcp` is held
 /// at WARN. The binary and the log-content tests both use this constant.
 pub const LOG_FILTER: &str = "info,rmcp=warn";
+
+/// How long a secret fetch can take: the process runner's timeout (`valetkey-secrets`).
+const SECRET_FETCH_BOUND: Duration = Duration::from_secs(20);
 
 /// How long the broker waits for the client's `roots/list` answer, by default.
 pub const DEFAULT_ROOTS_TIMEOUT: Duration = Duration::from_secs(5);
@@ -58,6 +72,8 @@ pub struct BrokerConfig {
     /// How long to wait for the client's `roots/list` answer before treating the project dir as
     /// unverified.
     pub roots_timeout: Duration,
+    /// How long a write waits for `valetkey approve` ([`writes::APPROVAL_TIMEOUT`] by default).
+    pub approval_timeout: Duration,
 }
 
 /// The MCP server.
@@ -65,6 +81,13 @@ pub struct BrokerConfig {
 pub struct Broker {
     config: Arc<BrokerConfig>,
     cache: Arc<SecretCache>,
+    writes: Arc<WriteState>,
+    /// Random per broker process; recorded in write requests and audit records.
+    session_id: String,
+    /// Tracks write calls and their execution tasks, so shutdown waits for their outcomes.
+    tracker: TaskTracker,
+    /// Cancelled when the client disconnects: waiting writes are withdrawn.
+    shutdown: CancellationToken,
     tool_router: ToolRouter<Self>,
 }
 
@@ -73,15 +96,49 @@ impl Broker {
         Self {
             config: Arc::new(config),
             cache: Arc::new(SecretCache::default()),
+            writes: Arc::new(WriteState::default()),
+            session_id: valetkey_core::write_request::random_hex(8),
+            tracker: TaskTracker::new(),
+            shutdown: CancellationToken::new(),
             tool_router: Self::tool_router(),
         }
     }
 
-    /// Serves MCP over stdin/stdout until the client disconnects.
+    /// Serves MCP over stdin/stdout until the client disconnects, then [`Broker::drain`]s.
     pub async fn serve_stdio(self) -> anyhow::Result<()> {
-        let service = self.serve(rmcp::transport::stdio()).await?;
-        service.waiting().await?;
+        // Requests orphaned by an earlier broker that was killed.
+        valetkey_core::write_store::sweep(&self.config.root);
+        let service = self.clone().serve(rmcp::transport::stdio()).await?;
+        let result = service.waiting().await;
+        self.drain().await;
+        result?;
         Ok(())
+    }
+
+    /// The longest an approved write can still take (M3 code review C1): re-resolving the session
+    /// (roots), fetching the secret, executing, and the longest `COMMIT` bound, plus a margin.
+    fn drain_bound(&self) -> Duration {
+        let limits = valetkey_postgres::read::Limits::default();
+        self.config.roots_timeout
+            + SECRET_FETCH_BOUND
+            + limits.call_timeout
+            + Duration::from_millis(u64::from(valetkey_postgres::MAX_STATEMENT_TIMEOUT_MS))
+            + Duration::from_secs(20)
+    }
+
+    /// Ends the session: withdraws writes still waiting for approval and waits (bounded) for
+    /// approved writes to finish and be audited. Call it before the runtime is dropped (M3 review
+    /// B2): dropping a runtime drops its tasks, which could cut off a `COMMIT` before its outcome
+    /// is recorded. An `approved` audit record without an outcome means the outcome is unknown.
+    pub async fn drain(&self) {
+        self.shutdown.cancel();
+        self.tracker.close();
+        if tokio::time::timeout(self.drain_bound(), self.tracker.wait())
+            .await
+            .is_err()
+        {
+            tracing::warn!("writes still running at shutdown; their audit records may lack an outcome");
+        }
     }
 }
 
@@ -152,6 +209,21 @@ impl Broker {
     ) -> Result<CallToolResult, McpError> {
         let (sql, params) = describe_query(args.table.as_deref());
         Ok(self.run_sql(&peer, &args.target, sql, &params, "sql_describe").await)
+    }
+
+    #[tool(
+        name = "sql_execute",
+        description = "Run one writing SQL statement (INSERT, UPDATE, DELETE, DDL) on a writable Postgres target. \
+                       A human must approve this exact statement and its parameters by running `valetkey approve <id>` \
+                       in a terminal; the call waits for that (up to 5 minutes) and then commits it as a whole, or \
+                       returns the denial. Set allow_write = true. Use $1, $2, … placeholders with `params` for values."
+    )]
+    async fn sql_execute(
+        &self,
+        Parameters(args): Parameters<SqlExecuteArgs>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        Ok(self.execute_with_approval(args, context).await)
     }
 }
 
@@ -229,7 +301,14 @@ struct TargetReport {
     /// The fence state that applies, for protected targets.
     #[serde(skip_serializing_if = "Option::is_none")]
     fence: Option<&'static str>,
+    /// How writes work, for writable targets.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    writes: Option<&'static str>,
 }
+
+/// What `valetkey_targets` says about writes (§6.10; before M4 every write needs approval).
+const WRITES_NEED_APPROVAL: &str =
+    "each sql_execute call waits until a human approves it with `valetkey approve <id>` in a terminal";
 
 impl Broker {
     async fn targets_report(&self, peer: &Peer<RoleServer>) -> TargetsReport {
@@ -260,9 +339,14 @@ impl Broker {
                         writable: t.writable,
                         secret_exposure: exposure,
                         available: true,
-                        tools: vec!["sql_query", "sql_describe"],
+                        tools: if t.writable {
+                            vec!["sql_query", "sql_describe", "sql_execute"]
+                        } else {
+                            vec!["sql_query", "sql_describe"]
+                        },
                         reason: "usable".into(),
                         fence: u.fence,
+                        writes: t.writable.then_some(WRITES_NEED_APPROVAL),
                     },
                     Err(reason) => TargetReport {
                         id: id.to_string(),
@@ -273,6 +357,7 @@ impl Broker {
                         tools: vec![],
                         reason,
                         fence: None,
+                        writes: None,
                     },
                 }
             })
@@ -284,8 +369,8 @@ impl Broker {
         }
     }
 
-    /// Steps 1–4 for one SQL call. Refusals and failures are tool errors with fixed or
-    /// server-provided text; never secrets.
+    /// One read (`sql_query`, `sql_describe`). Refusals and failures are tool errors with fixed or
+    /// server-provided text; never secrets. Every call is audited.
     async fn run_sql(
         &self,
         peer: &Peer<RoleServer>,
@@ -296,10 +381,22 @@ impl Broker {
     ) -> CallToolResult {
         let started = std::time::Instant::now();
         let statement_hash = blake3::hash(sql.as_bytes()).to_hex()[..16].to_owned();
+        if let Err(reason) = check_input(sql, params) {
+            self.audit(
+                &self.draft_oversized(tool, target, sql, params),
+                Outcome::Refused,
+                Some(&reason),
+            );
+            tracing::info!(tool, target = %sanitize(target), outcome = "refused", "sql call");
+            return tool_error(reason);
+        }
+        let mut draft = self.draft(tool, target, sql, params);
         let s = resolve(&self.config, peer).await;
+        draft.session(&s);
         let usable = match evaluate(&self.config, &s, target) {
             Ok(u) => u,
             Err(reason) => {
+                self.audit(&draft, Outcome::Refused, Some(&reason));
                 tracing::info!(tool, target = %sanitize(target), outcome = "refused", "sql call");
                 return tool_error(reason);
             }
@@ -308,6 +405,9 @@ impl Broker {
         let ms = started.elapsed().as_millis();
         match result {
             Ok(mut out) => {
+                draft.record.rows = out["row_count"].as_u64();
+                draft.record.truncated = out["truncated"].as_bool();
+                self.audit(&draft, Outcome::Ok, None);
                 tracing::info!(
                     tool,
                     target,
@@ -327,13 +427,19 @@ impl Broker {
                 }
             }
             Err((public, detail)) => {
+                self.audit(&draft, Outcome::Error, Some(&public));
                 tracing::warn!(tool, target, statement_hash, ms, outcome = "error", detail = %detail, "sql call");
                 tool_error(public)
             }
         }
     }
 
-    async fn execute(&self, s: &Session, u: &Usable, sql: &str, params: &[Value]) -> Result<Value, (String, String)> {
+    /// The target's secret, through the cache. Policy has already passed.
+    pub(crate) async fn fetch_secret(
+        &self,
+        s: &Session,
+        u: &Usable,
+    ) -> Result<(SecretString, CacheKey), (String, String)> {
         let user = UserConfig::load(&self.config.root).map_err(|e| {
             (
                 "valetkey's user config can't be read; ask a human to run `valetkey doctor`".to_owned(),
@@ -341,18 +447,12 @@ impl Broker {
             )
         })?;
         let project = s.project.as_ref().expect("policy passed, so there is a project");
-        let snapshot = s.snapshot.as_ref().expect("policy passed, so there is a snapshot");
         let reference = u
             .target
             .secret
             .as_ref()
             .ok_or(("internal error: the target has no secret".to_owned(), String::new()))?;
-        let key = CacheKey {
-            project_key: project.key.to_string(),
-            config_hash: snapshot.config_hash.to_string(),
-            target: u.id.clone(),
-            reference: reference.to_string(),
-        };
+        let key = self.cache_key(s, u).expect("policy passed, so there is a secret");
         let cx = valetkey_core::secret_source::FetchCx {
             project_root: &project.root,
             root: &self.config.root,
@@ -363,6 +463,27 @@ impl Broker {
             .get_or_fetch(key.clone(), || valetkey_secrets::fetch(reference, &cx))
             .await
             .map_err(|e| (e.to_string(), e.detail().to_owned()))?;
+        Ok((password, key))
+    }
+
+    /// Drops a secret the database rejected.
+    pub(crate) fn invalidate_secret(&self, s: &Session, u: &Usable) {
+        if let Some(key) = self.cache_key(s, u) {
+            self.cache.invalidate(&key);
+        }
+    }
+
+    fn cache_key(&self, s: &Session, u: &Usable) -> Option<CacheKey> {
+        Some(CacheKey {
+            project_key: s.project.as_ref()?.key.to_string(),
+            config_hash: s.snapshot.as_ref()?.config_hash.to_string(),
+            target: u.id.clone(),
+            reference: u.target.secret.as_ref()?.to_string(),
+        })
+    }
+
+    async fn execute(&self, s: &Session, u: &Usable, sql: &str, params: &[Value]) -> Result<Value, (String, String)> {
+        let (password, key) = self.fetch_secret(s, u).await?;
 
         let endpoint = u
             .spec
@@ -398,10 +519,46 @@ impl Broker {
     }
 }
 
-fn tool_error(message: String) -> CallToolResult {
+pub(crate) fn tool_error(message: String) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(message)])
 }
 
-fn sanitize(s: &str) -> String {
+/// Size limits shared by every SQL tool, so prompts, logs and audit records stay bounded.
+pub(crate) fn check_input(sql: &str, params: &[Value]) -> Result<(), String> {
+    if sql.len() > MAX_STATEMENT_BYTES {
+        return Err(format!(
+            "refused: the statement is {} bytes; the limit is {MAX_STATEMENT_BYTES}",
+            sql.len()
+        ));
+    }
+    if params.len() > MAX_PARAMS {
+        return Err(format!(
+            "refused: {} parameters; the limit is {MAX_PARAMS}",
+            params.len()
+        ));
+    }
+    let mut total = 0usize;
+    for (i, p) in params.iter().enumerate() {
+        let len = match p {
+            Value::String(s) => s.len(),
+            other => other.to_string().len(),
+        };
+        if len > MAX_PARAM_BYTES {
+            return Err(format!(
+                "refused: parameter ${} is {len} bytes; the limit is {MAX_PARAM_BYTES}",
+                i + 1
+            ));
+        }
+        total += len;
+    }
+    if total > MAX_PARAMS_TOTAL_BYTES {
+        return Err(format!(
+            "refused: the parameters total {total} bytes; the limit is {MAX_PARAMS_TOTAL_BYTES}"
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn sanitize(s: &str) -> String {
     valetkey_core::sanitize::for_display(s)
 }

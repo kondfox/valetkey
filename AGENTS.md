@@ -36,24 +36,25 @@ from the project's config.
 
 - Spec: `docs/design.md`. Threat model: `docs/threat-model.md`. Changing either is a design change:
   get it reviewed, and record the *why* in `wiki/decisions/`.
-- **Status (2026-10-08).** The milestones are in `docs/design.md §10`; the latest entries in
+- **Status (2026-10-09).** The milestones are in `docs/design.md §10`; the latest entries in
   `wiki/_log.md` say what changed most recently.
-  - M0 (spike), M1 (skeleton) and M2a (secret sources, runner, `setup`, `secret`; PR #2) are
-    merged.
-  - M2b (Postgres read path, `sql_query`, `sql_describe`) is in PR #3, reviewed and waiting for
-    the maintainer's merge.
-  - **Next: M3**: writes (`sql_execute`), out-of-band approval with `valetkey approve`, the audit
-    log, and verified TLS for remote targets. The spec sections:
-    - §6.10: approval (and `wiki/decisions/2026-10-04-out-of-band-write-approval.md`)
-    - §6.2: TLS (post-TLS auth guard, local-address check on the resolved address, pinning,
-      deny-read for local CA keys)
-    - §6.7 step 7: the audit record's fields
-    - §6.8: TLS and CA bundle settings only from user-level config
-    - §6.9: the auth guard wraps the post-TLS stream
-  - **Where M3 starts:** until PR #3 merges, branch `m3-…` from `m2b-postgres` and open M3 as a
-    PR stacked on #3. After #3 merges, merge `main` into the M3 branch (see "How we work").
-  - **Open follow-ups** from earlier reviews are tech-debt pages: see `wiki/tech-debt/_index.md`
-    (on the branch you work on; M2b's are in PR #3).
+  - M0 (spike), M1 (skeleton), M2a (secret sources, runner, `setup`, `secret`; PR #2) and M2b
+    (Postgres read path, `sql_query`, `sql_describe`; PR #3) are merged.
+  - **M3 is two stacked PRs** (`wiki/decisions/2026-10-09-m3-scope.md`):
+    - **M3a** (branch `m3a-writes`): `sql_execute`, out-of-band approval with `valetkey approve`,
+      the audit log, `valetkey log`.
+    - **M3b** (next, stacked on M3a): verified TLS for remote targets. Its detailed plan is reviewed
+      before code and must cover the M3 review's TLS findings and
+      `wiki/tech-debt/broker-env-not-scrubbed.md`. The spec sections:
+      - §6.2: TLS (post-TLS auth guard, local-address check on the resolved address, pinning,
+        deny-read for local CA keys)
+      - §6.8: TLS and CA bundle settings only from user-level config
+      - §6.9: the auth guard wraps the post-TLS stream
+  - **Stacked branches:** after a PR below merges, merge `main` into the branch on top (see "How
+    we work").
+  - **Open follow-ups** from earlier reviews are tech-debt pages: see `wiki/tech-debt/_index.md`.
+  - Until M4 (fence detection), every write needs approval, and the approval store isn't fenced
+    from the agent yet (accepted by the maintainer; don't use writes before M4).
   - Until M4 (fence detection), protected targets are refused unless `require_fence = false`.
 - Building, testing and CI: `wiki/workflows/development.md`. Before every commit:
   `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`,

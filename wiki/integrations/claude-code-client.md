@@ -18,6 +18,22 @@ changing the real user config).
 | Hooks run **unsandboxed**, with Claude Code's environment | experiment; docs (hooks) |
 | Claude Code's own `git` calls (`status`, `log`, `ls-files`, `config`, `remote`, `check-ignore`) run unsandboxed and look `git` up through `PATH`; a fake `git` in a project dir on `PATH` ran with full access | experiment |
 
+| **2.1.294** first sends a `server/discover` request with `io.modelcontextprotocol/protocolVersion` `2026-07-28` in `_meta`. A server that answers it with an empty result gets the usual `initialize` at protocol `2025-11-25` | experiment, 2026-10-08 (dummy stdio server, macOS) |
+
+**Long tool calls** (relevant to [[sql-execute]], which waits up to 5 minutes):
+- Docs, read 2026-10-08 (code.claude.com/docs/en/mcp and env-vars): stdio servers get a 30-minute
+  idle window, reset by progress notifications (`CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT`). The hard
+  per-call limit is about 28 hours (`MCP_TOOL_TIMEOUT`).
+- Interactively, a call running over 2 minutes moves to a background task. An open elicitation
+  dialog keeps it in the foreground.
+- **UNVERIFIED on the real client.** The `claude -p` run on 2026-10-08 couldn't start (expired
+  login). Unverified:
+  - the timeout
+  - what Esc sends
+  - how the display-only elicitation looks
+  - whether its dialog stays open after the broker stops waiting (the broker drops the request
+    future)
+
 ## Quirks
 
 - **Shadowing is silent.** Same server name in `.mcp.json` and `--mcp-config`: only the
