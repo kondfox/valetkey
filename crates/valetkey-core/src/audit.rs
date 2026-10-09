@@ -195,6 +195,7 @@ pub fn open_read(path: &Path) -> io::Result<File> {
 
 /// How long a record waits for another writer's lock before giving up. Callers run on async
 /// worker threads, so this never blocks indefinitely (M3 code review).
+#[cfg(unix)]
 const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
 #[cfg(unix)]
